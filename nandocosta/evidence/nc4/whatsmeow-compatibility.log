@@ -1,0 +1,65 @@
+# github.com/evolution-foundation/evolution-go/pkg/user/service
+pkg/user/service/user_service.go:448:65: not enough arguments in call to client.UpdateBlocklist
+	have (context.Context, types.JID, events.BlocklistChangeAction)
+	want (context.Context, types.JID, events.BlocklistChangeAction, string)
+pkg/user/service/user_service.go:467:65: not enough arguments in call to client.UpdateBlocklist
+	have (context.Context, types.JID, events.BlocklistChangeAction)
+	want (context.Context, types.JID, events.BlocklistChangeAction, string)
+pkg/user/service/user_service.go:481:35: not enough arguments in call to client.GetBlocklist
+	have (context.Context)
+	want (context.Context, string)
+pkg/user/service/user_service.go:536:54: cannot use data.Status (variable of type string) as types.SetStatusInput value in argument to client.SetStatusMessage
+FAIL	github.com/evolution-foundation/evolution-go/cmd/evolution-go [build failed]
+?   	github.com/evolution-foundation/evolution-go/docs	[no test files]
+?   	github.com/evolution-foundation/evolution-go/nandocosta	[no test files]
+?   	github.com/evolution-foundation/evolution-go/pkg/call/handler	[no test files]
+?   	github.com/evolution-foundation/evolution-go/pkg/call/service	[no test files]
+?   	github.com/evolution-foundation/evolution-go/pkg/chat/handler	[no test files]
+ok  	github.com/evolution-foundation/evolution-go/pkg/chat/service	0.023s
+?   	github.com/evolution-foundation/evolution-go/pkg/community/handler	[no test files]
+?   	github.com/evolution-foundation/evolution-go/pkg/community/service	[no test files]
+?   	github.com/evolution-foundation/evolution-go/pkg/config	[no test files]
+?   	github.com/evolution-foundation/evolution-go/pkg/config/env	[no test files]
+?   	github.com/evolution-foundation/evolution-go/pkg/core	[no test files]
+?   	github.com/evolution-foundation/evolution-go/pkg/events/interfaces	[no test files]
+?   	github.com/evolution-foundation/evolution-go/pkg/events/nats	[no test files]
+?   	github.com/evolution-foundation/evolution-go/pkg/events/rabbitmq	[no test files]
+ok  	github.com/evolution-foundation/evolution-go/pkg/events/webhook	0.079s
+ok  	github.com/evolution-foundation/evolution-go/pkg/events/websocket	0.162s
+?   	github.com/evolution-foundation/evolution-go/pkg/group/handler	[no test files]
+?   	github.com/evolution-foundation/evolution-go/pkg/group/service	[no test files]
+ok  	github.com/evolution-foundation/evolution-go/pkg/instance/handler	0.025s
+?   	github.com/evolution-foundation/evolution-go/pkg/instance/model	[no test files]
+ok  	github.com/evolution-foundation/evolution-go/pkg/instance/repository	0.018s
+ok  	github.com/evolution-foundation/evolution-go/pkg/instance/service	0.039s
+?   	github.com/evolution-foundation/evolution-go/pkg/internal/event_types	[no test files]
+?   	github.com/evolution-foundation/evolution-go/pkg/label/handler	[no test files]
+?   	github.com/evolution-foundation/evolution-go/pkg/label/model	[no test files]
+?   	github.com/evolution-foundation/evolution-go/pkg/label/repository	[no test files]
+?   	github.com/evolution-foundation/evolution-go/pkg/label/service	[no test files]
+?   	github.com/evolution-foundation/evolution-go/pkg/logger	[no test files]
+?   	github.com/evolution-foundation/evolution-go/pkg/message/handler	[no test files]
+?   	github.com/evolution-foundation/evolution-go/pkg/message/model	[no test files]
+ok  	github.com/evolution-foundation/evolution-go/pkg/message/repository	0.019s
+?   	github.com/evolution-foundation/evolution-go/pkg/message/service	[no test files]
+?   	github.com/evolution-foundation/evolution-go/pkg/middleware	[no test files]
+?   	github.com/evolution-foundation/evolution-go/pkg/newsletter/handler	[no test files]
+?   	github.com/evolution-foundation/evolution-go/pkg/newsletter/service	[no test files]
+?   	github.com/evolution-foundation/evolution-go/pkg/passkey/ceremony	[no test files]
+?   	github.com/evolution-foundation/evolution-go/pkg/passkey/handler	[no test files]
+?   	github.com/evolution-foundation/evolution-go/pkg/poll/handler	[no test files]
+?   	github.com/evolution-foundation/evolution-go/pkg/poll/model	[no test files]
+?   	github.com/evolution-foundation/evolution-go/pkg/poll/service	[no test files]
+FAIL	github.com/evolution-foundation/evolution-go/pkg/routes [build failed]
+ok  	github.com/evolution-foundation/evolution-go/pkg/runtimestate	0.088s
+?   	github.com/evolution-foundation/evolution-go/pkg/sendMessage/handler	[no test files]
+ok  	github.com/evolution-foundation/evolution-go/pkg/sendMessage/service	0.641s
+?   	github.com/evolution-foundation/evolution-go/pkg/server/handler	[no test files]
+?   	github.com/evolution-foundation/evolution-go/pkg/storage/interfaces	[no test files]
+?   	github.com/evolution-foundation/evolution-go/pkg/storage/minio	[no test files]
+?   	github.com/evolution-foundation/evolution-go/pkg/telemetry	[no test files]
+FAIL	github.com/evolution-foundation/evolution-go/pkg/user/handler [build failed]
+FAIL	github.com/evolution-foundation/evolution-go/pkg/user/service [build failed]
+ok  	github.com/evolution-foundation/evolution-go/pkg/utils	0.015s
+ok  	github.com/evolution-foundation/evolution-go/pkg/whatsmeow/service	0.235s
+FAIL

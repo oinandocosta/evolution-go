@@ -10,6 +10,7 @@ import (
 
 	instance_model "github.com/evolution-foundation/evolution-go/pkg/instance/model"
 	logger_wrapper "github.com/evolution-foundation/evolution-go/pkg/logger"
+	"github.com/evolution-foundation/evolution-go/pkg/runtimestate"
 	"github.com/evolution-foundation/evolution-go/pkg/utils"
 	whatsmeow_service "github.com/evolution-foundation/evolution-go/pkg/whatsmeow/service"
 	"go.mau.fi/whatsmeow"
@@ -20,20 +21,20 @@ import (
 type UserService interface {
 	GetUser(data *CheckUserStruct, instance *instance_model.Instance) (*UserCollection, error)
 	CheckUser(data *CheckUserStruct, instance *instance_model.Instance) (*CheckUserCollection, error)
-	GetAvatar(data *GetAvatarStruct, instance *instance_model.Instance) (*types.ProfilePictureInfo, error)
+	GetAvatar(ctx context.Context, data *GetAvatarStruct, instance *instance_model.Instance) (*types.ProfilePictureInfo, error)
 	GetContacts(instance *instance_model.Instance) ([]ContactInfo, error)
 	GetPrivacy(instance *instance_model.Instance) (types.PrivacySettings, error)
 	SetPrivacy(data *PrivacyStruct, instance *instance_model.Instance) (*types.PrivacySettings, error)
-	BlockContact(data *BlockStruct, instance *instance_model.Instance) (*types.Blocklist, error)
-	UnlockContact(data *BlockStruct, instance *instance_model.Instance) (*types.Blocklist, error)
-	GetBlockList(instance *instance_model.Instance) (*types.Blocklist, error)
+	BlockContact(data *BlockStruct, instance *instance_model.Instance) (*Blocklist, error)
+	UnlockContact(data *BlockStruct, instance *instance_model.Instance) (*Blocklist, error)
+	GetBlockList(instance *instance_model.Instance) (*Blocklist, error)
 	SetProfilePicture(data *SetProfilePictureStruct, instance *instance_model.Instance) (bool, error)
 	SetProfileName(data *SetProfileNameStruct, instance *instance_model.Instance) (bool, error)
 	SetProfileStatus(data *SetProfileStatusStruct, instance *instance_model.Instance) (bool, error)
 }
 
 type userService struct {
-	clientPointer    map[string]*whatsmeow.Client
+	clientPointer    *runtimestate.Map[string, *whatsmeow.Client]
 	whatsmeowService whatsmeow_service.WhatsmeowService
 	loggerWrapper    *logger_wrapper.LoggerManager
 }
@@ -109,7 +110,7 @@ type PrivacyStruct struct {
 }
 
 func (u *userService) ensureClientConnected(instanceId string) (*whatsmeow.Client, error) {
-	client := u.clientPointer[instanceId]
+	client := u.clientPointer.Get(instanceId)
 	u.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Checking client connection status - Client exists: %v", instanceId, client != nil)
 
 	if client == nil {
@@ -123,7 +124,7 @@ func (u *userService) ensureClientConnected(instanceId string) (*whatsmeow.Clien
 		u.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Instance started, waiting 2 seconds...", instanceId)
 		time.Sleep(2 * time.Second)
 
-		client = u.clientPointer[instanceId]
+		client = u.clientPointer.Get(instanceId)
 		u.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Checking new client - Exists: %v, Connected: %v",
 			instanceId,
 			client != nil,
@@ -315,54 +316,6 @@ func (u *userService) mergeCheckUserResults(original, retry *CheckUserCollection
 	return merged
 }
 
-func (u *userService) GetAvatar(data *GetAvatarStruct, instance *instance_model.Instance) (*types.ProfilePictureInfo, error) {
-	client, err := u.ensureClientConnected(instance.Id)
-	if err != nil {
-		return nil, err
-	}
-
-	// 🔒 FIX: Verificar se o cliente está conectado antes de fazer a requisição
-	if !client.IsConnected() {
-		return nil, errors.New("client is not connected to WhatsApp")
-	}
-
-	// 🔒 FIX: Verificar se o cliente está autenticado
-	if !client.IsLoggedIn() {
-		return nil, errors.New("client is not logged in to WhatsApp")
-	}
-
-	jid, ok := utils.ParseJID(data.Number)
-	if !ok {
-		return nil, errors.New("invalid phone number")
-	}
-
-	u.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Requesting avatar for JID: %s, Preview: %v", instance.Id, jid, data.Preview)
-
-	var pic *types.ProfilePictureInfo
-
-	// 🔒 FIX: Adicionar timeout ao contexto para evitar que a requisição trave indefinidamente
-	// Usar timeout maior que o padrão do sendIQ (75s) para dar tempo suficiente
-	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Second)
-	defer cancel()
-
-	u.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Starting GetProfilePictureInfo request...", instance.Id)
-	pic, err = client.GetProfilePictureInfo(ctx, jid, &whatsmeow.GetProfilePictureParams{
-		Preview: data.Preview,
-	})
-	if err != nil {
-		u.loggerWrapper.GetLogger(instance.Id).LogError("[%s] GetProfilePictureInfo failed: %v", instance.Id, err)
-		return nil, err
-	}
-
-	if pic == nil {
-		return nil, errors.New("no profile picture found")
-	}
-
-	u.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Got avatar %s", instance.Id, pic.URL)
-
-	return pic, nil
-}
-
 func (u *userService) GetContacts(instance *instance_model.Instance) ([]ContactInfo, error) {
 	client, err := u.ensureClientConnected(instance.Id)
 	if err != nil {
@@ -433,56 +386,42 @@ func (u *userService) SetPrivacy(data *PrivacyStruct, instance *instance_model.I
 	return &privacy, nil
 }
 
-func (u *userService) BlockContact(data *BlockStruct, instance *instance_model.Instance) (*types.Blocklist, error) {
-	client, err := u.ensureClientConnected(instance.Id)
-	if err != nil {
-		return nil, err
-	}
-
-	jid, ok := utils.ParseJID(data.Number)
-	if !ok {
-		return nil, errors.New("invalid phone number")
-	}
-
-	resp, err := client.UpdateBlocklist(context.Background(), jid, events.BlocklistChangeActionBlock)
-	if err != nil {
-		return nil, err
-	}
-
-	return resp, nil
+func (u *userService) BlockContact(data *BlockStruct, instance *instance_model.Instance) (*Blocklist, error) {
+	return u.changeBlocklist(data, instance, events.BlocklistChangeActionBlock)
 }
 
-func (u *userService) UnlockContact(data *BlockStruct, instance *instance_model.Instance) (*types.Blocklist, error) {
-	client, err := u.ensureClientConnected(instance.Id)
-	if err != nil {
-		return nil, err
-	}
-
-	jid, ok := utils.ParseJID(data.Number)
-	if !ok {
-		return nil, errors.New("invalid phone number")
-	}
-
-	resp, err := client.UpdateBlocklist(context.Background(), jid, events.BlocklistChangeActionUnblock)
-	if err != nil {
-		return nil, err
-	}
-
-	return resp, nil
+func (u *userService) UnlockContact(data *BlockStruct, instance *instance_model.Instance) (*Blocklist, error) {
+	return u.changeBlocklist(data, instance, events.BlocklistChangeActionUnblock)
 }
 
-func (u *userService) GetBlockList(instance *instance_model.Instance) (*types.Blocklist, error) {
+func (u *userService) changeBlocklist(data *BlockStruct, instance *instance_model.Instance, action events.BlocklistChangeAction) (*Blocklist, error) {
+	if data == nil {
+		return nil, ErrInvalidUserNumber
+	}
+	jid, err := parseBlocklistJID(data.Number)
+	if err != nil {
+		return nil, err
+	}
+	if instance == nil {
+		return nil, errors.New("instance not found")
+	}
+	client, err := u.ensureClientConnected(instance.Id)
+	if err != nil {
+		return nil, err
+	}
+	return updateFullBlocklist(context.Background(), client, jid, action)
+}
+
+func (u *userService) GetBlockList(instance *instance_model.Instance) (*Blocklist, error) {
+	if instance == nil {
+		return nil, errors.New("instance not found")
+	}
 	client, err := u.ensureClientConnected(instance.Id)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := client.GetBlocklist(context.Background())
-	if err != nil {
-		return nil, err
-	}
-
-	return resp, nil
+	return fetchFullBlocklist(context.Background(), client)
 }
 
 func (u *userService) SetProfilePicture(data *SetProfilePictureStruct, instance *instance_model.Instance) (bool, error) {
@@ -527,21 +466,19 @@ func (u *userService) SetProfileName(data *SetProfileNameStruct, instance *insta
 }
 
 func (u *userService) SetProfileStatus(data *SetProfileStatusStruct, instance *instance_model.Instance) (bool, error) {
+	if data == nil || instance == nil {
+		return false, errors.New("status and instance are required")
+	}
 	client, err := u.ensureClientConnected(instance.Id)
 	if err != nil {
 		return false, err
 	}
 
-	err = client.SetStatusMessage(context.Background(), data.Status)
-	if err != nil {
-		return false, err
-	}
-
-	return true, nil
+	return setPlainProfileStatus(context.Background(), client, data.Status)
 }
 
 func NewUserService(
-	clientPointer map[string]*whatsmeow.Client,
+	clientPointer *runtimestate.Map[string, *whatsmeow.Client],
 	whatsmeowService whatsmeow_service.WhatsmeowService,
 	loggerWrapper *logger_wrapper.LoggerManager,
 ) UserService {

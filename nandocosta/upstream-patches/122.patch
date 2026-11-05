@@ -1,0 +1,1334 @@
+From 2885ceb506f7f9d55f44f80024a14fc7010bb083 Mon Sep 17 00:00:00 2001
+From: cesar carlos <cesar_carlos@msn.com>
+Date: Fri, 17 Jul 2026 18:24:54 +0000
+Subject: [PATCH 1/5] fix: decrypt incoming message edits for webhook payload
+
+Newer WhatsApp clients send edits as SecretEncryptedMessage; without
+decrypting, Message webhooks arrived without the new text. Decrypt
+MESSAGE_EDIT before marshal, set IsEdit, and document the contract.
+
+Closes #92
+
+Co-authored-by: Cursor <cursoragent@cursor.com>
+---
+ docs/wiki/recursos-avancados/events-system.md | 12 ++++++++++
+ pkg/whatsmeow/service/whatsmeow.go            | 22 +++++++++++++++++++
+ 2 files changed, 34 insertions(+)
+
+diff --git a/docs/wiki/recursos-avancados/events-system.md b/docs/wiki/recursos-avancados/events-system.md
+index ef6530071..69115172f 100644
+--- a/docs/wiki/recursos-avancados/events-system.md
++++ b/docs/wiki/recursos-avancados/events-system.md
+@@ -637,6 +637,18 @@ O Evolution GO usa dois níveis de classificação de eventos:
+ - `Receipt` - Confirmação de leitura (`READ_RECEIPT`)
+ - Reações, edições, deleções de mensagens
+ 
++#### Edição de mensagem recebida
++
++Quando um contato edita uma mensagem, o evento continua sendo `Message` (subscribe `MESSAGE`). Não existe categoria separada `MESSAGE_EDIT`.
++
++Após descriptografia, o payload inclui:
++
++- `IsEdit: true`
++- Texto novo em `Message.protocolMessage.editedMessage` (ex.: `conversation` ou `extendedTextMessage`)
++- ID da mensagem original em `Message.protocolMessage.key.id` (ou, antes do decrypt, em `secretEncryptedMessage.targetMessageKey.id`)
++
++**Limitação**: o decrypt usa o `messageSecret` da mensagem original armazenado na sessão. Se a mensagem original não estiver no store (ex.: enviada antes da sessão atual), o webhook pode ainda chegar com `secretEncryptedMessage` cifrado e sem texto em claro.
++
+ ### Eventos de Grupos
+ 
+ **Categoria**: `GROUP`
+diff --git a/pkg/whatsmeow/service/whatsmeow.go b/pkg/whatsmeow/service/whatsmeow.go
+index 366f0edb1..ef2d1cc9a 100644
+--- a/pkg/whatsmeow/service/whatsmeow.go
++++ b/pkg/whatsmeow/service/whatsmeow.go
+@@ -1236,12 +1236,34 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 			}()
+ 		}
+ 
++		// Newer WhatsApp clients send edits as SecretEncryptedMessage(MESSAGE_EDIT).
++		// Decrypt before classification/marshal so the webhook includes the new text.
++		if enc := evt.Message.GetSecretEncryptedMessage(); enc != nil &&
++			enc.GetSecretEncType() == waE2E.SecretEncryptedMessage_MESSAGE_EDIT {
++			decrypted, err := mycli.WAClient.DecryptSecretEncryptedMessage(context.Background(), evt)
++			if err != nil {
++				mycli.loggerWrapper.GetLogger(mycli.userID).LogWarn(
++					"[%s] Failed to decrypt secret encrypted message edit (original secret may be missing): %v",
++					mycli.userID, err)
++			} else {
++				evt.Message = decrypted
++				evt.IsEdit = true
++				mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo(
++					"[%s] Decrypted secret encrypted message edit for %s", mycli.userID, evt.Info.ID)
++			}
++		}
++
+ 		parsedMessageType := utils.GetMessageType(evt.Message)
+ 		if parsedMessageType == "ignore" || strings.HasPrefix(parsedMessageType, "unknown_protocol_") {
+ 			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Message ignored because it's a unknown protocol message", mycli.userID)
+ 			return
+ 		}
+ 
++		// Legacy plaintext edits arrive as ProtocolMessage MESSAGE_EDIT (IsEdit stays false otherwise).
++		if parsedMessageType == "edit" {
++			evt.IsEdit = true
++		}
++
+ 		if postMap["data"] != nil {
+ 			jsonBytes, err := json.Marshal(postMap["data"])
+ 			if err != nil {
+
+From 00e91caee7c19fe86ef191001be3f3131809b1f9 Mon Sep 17 00:00:00 2001
+From: cesar carlos <cesar_carlos@msn.com>
+Date: Fri, 17 Jul 2026 18:31:12 +0000
+Subject: [PATCH 2/5] fix: clarify revoke/delete flags on Message webhook
+
+Expose IsRevoke, messageType, and protocolMessage.typeName so consumers
+can detect deletes without relying on opaque Info.Edit or numeric type 0.
+
+Part of #92
+
+Co-authored-by: Cursor <cursoragent@cursor.com>
+---
+ docs/wiki/recursos-avancados/events-system.md | 13 +++++++++
+ pkg/whatsmeow/service/whatsmeow.go            | 29 +++++++++++++++++++
+ 2 files changed, 42 insertions(+)
+
+diff --git a/docs/wiki/recursos-avancados/events-system.md b/docs/wiki/recursos-avancados/events-system.md
+index 69115172f..c665f9957 100644
+--- a/docs/wiki/recursos-avancados/events-system.md
++++ b/docs/wiki/recursos-avancados/events-system.md
+@@ -644,11 +644,24 @@ Quando um contato edita uma mensagem, o evento continua sendo `Message` (subscri
+ Após descriptografia, o payload inclui:
+ 
+ - `IsEdit: true`
++- `messageType: "edit"`
++- `Message.protocolMessage.typeName: "MESSAGE_EDIT"` (o campo numérico `type` continua presente)
+ - Texto novo em `Message.protocolMessage.editedMessage` (ex.: `conversation` ou `extendedTextMessage`)
+ - ID da mensagem original em `Message.protocolMessage.key.id` (ou, antes do decrypt, em `secretEncryptedMessage.targetMessageKey.id`)
+ 
+ **Limitação**: o decrypt usa o `messageSecret` da mensagem original armazenado na sessão. Se a mensagem original não estiver no store (ex.: enviada antes da sessão atual), o webhook pode ainda chegar com `secretEncryptedMessage` cifrado e sem texto em claro.
+ 
++#### Exclusão (revoke) de mensagem
++
++Quando um contato apaga uma mensagem “para todos”, o evento também é `Message` (subscribe `MESSAGE`).
++
++O payload inclui:
++
++- `IsRevoke: true`
++- `messageType: "revoke"`
++- `Message.protocolMessage.typeName: "REVOKE"` (equivalente ao `type: 0` / `Info.Edit: "7"`)
++- ID da mensagem apagada em `Message.protocolMessage.key.id`
++
+ ### Eventos de Grupos
+ 
+ **Categoria**: `GROUP`
+diff --git a/pkg/whatsmeow/service/whatsmeow.go b/pkg/whatsmeow/service/whatsmeow.go
+index ef2d1cc9a..ed12f38ac 100644
+--- a/pkg/whatsmeow/service/whatsmeow.go
++++ b/pkg/whatsmeow/service/whatsmeow.go
+@@ -1288,6 +1288,19 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 			dataMap = make(map[string]interface{})
+ 		}
+ 
++		// Explicit action flags for edit/revoke — protocolMessage.type alone is a
++		// numeric enum (0 = REVOKE, 14 = MESSAGE_EDIT) and Info.Edit is opaque.
++		switch parsedMessageType {
++		case "edit":
++			dataMap["IsEdit"] = true
++			dataMap["messageType"] = "edit"
++			setProtocolMessageTypeName(dataMap, "MESSAGE_EDIT")
++		case "revoke":
++			dataMap["IsRevoke"] = true
++			dataMap["messageType"] = "revoke"
++			setProtocolMessageTypeName(dataMap, "REVOKE")
++		}
++
+ 		referral := extractReferralFromMessage(evt.Message)
+ 
+ 		if evt.Message.GetPollUpdateMessage() != nil {
+@@ -2903,6 +2916,22 @@ func (w *whatsmeowService) ConfirmPasskey(instanceId string) error {
+ 	return nil
+ }
+ 
++// setProtocolMessageTypeName adds a human-readable protocolMessage.typeName
++// (e.g. REVOKE, MESSAGE_EDIT) without replacing the numeric type enum.
++func setProtocolMessageTypeName(dataMap map[string]interface{}, typeName string) {
++	message, ok := dataMap["Message"].(map[string]interface{})
++	if !ok {
++		return
++	}
++	pm, ok := message["protocolMessage"].(map[string]interface{})
++	if !ok {
++		return
++	}
++	pm["typeName"] = typeName
++	message["protocolMessage"] = pm
++	dataMap["Message"] = message
++}
++
+ // cleanSenderID remove a parte ":numero" do sender ID para exibir apenas o remoteJid correto
+ // Exemplo: "557499879409:3@s.whatsapp.net" -> "557499879409@s.whatsapp.net"
+ func cleanSenderID(senderID string) string {
+
+From ffe3945c9ee1f47f0b14ab96366a167af028112d Mon Sep 17 00:00:00 2001
+From: cesar carlos <cesar_carlos@msn.com>
+Date: Fri, 17 Jul 2026 18:35:16 +0000
+Subject: [PATCH 3/5] fix: harden incoming edit decrypt and flag fallbacks
+
+Keep IsEdit/messageType when decrypt fails, unwrap EditedMessage after
+decrypt without resetting RawMessage, prefer clientPointer like polls,
+and document key.ID plus the failure-path contract.
+
+Co-authored-by: Cursor <cursoragent@cursor.com>
+---
+ docs/wiki/recursos-avancados/events-system.md |  6 +--
+ pkg/whatsmeow/service/whatsmeow.go            | 45 ++++++++++++++-----
+ 2 files changed, 38 insertions(+), 13 deletions(-)
+
+diff --git a/docs/wiki/recursos-avancados/events-system.md b/docs/wiki/recursos-avancados/events-system.md
+index c665f9957..e2989ff5a 100644
+--- a/docs/wiki/recursos-avancados/events-system.md
++++ b/docs/wiki/recursos-avancados/events-system.md
+@@ -647,9 +647,9 @@ Após descriptografia, o payload inclui:
+ - `messageType: "edit"`
+ - `Message.protocolMessage.typeName: "MESSAGE_EDIT"` (o campo numérico `type` continua presente)
+ - Texto novo em `Message.protocolMessage.editedMessage` (ex.: `conversation` ou `extendedTextMessage`)
+-- ID da mensagem original em `Message.protocolMessage.key.id` (ou, antes do decrypt, em `secretEncryptedMessage.targetMessageKey.id`)
++- ID da mensagem original em `Message.protocolMessage.key.ID` (ou, antes do decrypt, em `secretEncryptedMessage.targetMessageKey.ID`)
+ 
+-**Limitação**: o decrypt usa o `messageSecret` da mensagem original armazenado na sessão. Se a mensagem original não estiver no store (ex.: enviada antes da sessão atual), o webhook pode ainda chegar com `secretEncryptedMessage` cifrado e sem texto em claro.
++**Limitação**: o decrypt usa o `messageSecret` da mensagem original armazenado na sessão. Se a mensagem original não estiver no store (ex.: enviada antes da sessão atual), o webhook ainda chega com `secretEncryptedMessage` cifrado (sem texto em claro), mas mantém `IsEdit: true` e `messageType: "edit"` para identificar a ação.
+ 
+ #### Exclusão (revoke) de mensagem
+ 
+@@ -660,7 +660,7 @@ O payload inclui:
+ - `IsRevoke: true`
+ - `messageType: "revoke"`
+ - `Message.protocolMessage.typeName: "REVOKE"` (equivalente ao `type: 0` / `Info.Edit: "7"`)
+-- ID da mensagem apagada em `Message.protocolMessage.key.id`
++- ID da mensagem apagada em `Message.protocolMessage.key.ID`
+ 
+ ### Eventos de Grupos
+ 
+diff --git a/pkg/whatsmeow/service/whatsmeow.go b/pkg/whatsmeow/service/whatsmeow.go
+index ed12f38ac..dd99978f7 100644
+--- a/pkg/whatsmeow/service/whatsmeow.go
++++ b/pkg/whatsmeow/service/whatsmeow.go
+@@ -1238,29 +1238,47 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 
+ 		// Newer WhatsApp clients send edits as SecretEncryptedMessage(MESSAGE_EDIT).
+ 		// Decrypt before classification/marshal so the webhook includes the new text.
++		secretEditEnvelope := false
+ 		if enc := evt.Message.GetSecretEncryptedMessage(); enc != nil &&
+ 			enc.GetSecretEncType() == waE2E.SecretEncryptedMessage_MESSAGE_EDIT {
+-			decrypted, err := mycli.WAClient.DecryptSecretEncryptedMessage(context.Background(), evt)
+-			if err != nil {
++			secretEditEnvelope = true
++			evt.IsEdit = true
++
++			client := mycli.clientPointer[mycli.userID]
++			if client == nil {
++				client = mycli.WAClient
++			}
++			if client == nil {
+ 				mycli.loggerWrapper.GetLogger(mycli.userID).LogWarn(
+-					"[%s] Failed to decrypt secret encrypted message edit (original secret may be missing): %v",
+-					mycli.userID, err)
++					"[%s] No client available to decrypt secret encrypted message edit", mycli.userID)
+ 			} else {
+-				evt.Message = decrypted
+-				evt.IsEdit = true
+-				mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo(
+-					"[%s] Decrypted secret encrypted message edit for %s", mycli.userID, evt.Info.ID)
++				decrypted, err := client.DecryptSecretEncryptedMessage(context.Background(), evt)
++				if err != nil {
++					mycli.loggerWrapper.GetLogger(mycli.userID).LogWarn(
++						"[%s] Failed to decrypt secret encrypted message edit (original secret may be missing): %v",
++						mycli.userID, err)
++				} else {
++					evt.Message = decrypted
++					mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo(
++						"[%s] Decrypted secret encrypted message edit for %s", mycli.userID, evt.Info.ID)
++				}
+ 			}
+ 		}
+ 
++		// EditedMessage wrapper (legacy wire format or post-decrypt). Do not call
++		// UnwrapRaw here — it resets Message from RawMessage and would undo decrypt.
++		if evt.Message != nil && evt.Message.GetEditedMessage().GetMessage() != nil {
++			evt.Message = evt.Message.GetEditedMessage().GetMessage()
++			evt.IsEdit = true
++		}
++
+ 		parsedMessageType := utils.GetMessageType(evt.Message)
+ 		if parsedMessageType == "ignore" || strings.HasPrefix(parsedMessageType, "unknown_protocol_") {
+ 			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Message ignored because it's a unknown protocol message", mycli.userID)
+ 			return
+ 		}
+ 
+-		// Legacy plaintext edits arrive as ProtocolMessage MESSAGE_EDIT (IsEdit stays false otherwise).
+-		if parsedMessageType == "edit" {
++		if parsedMessageType == "edit" || secretEditEnvelope {
+ 			evt.IsEdit = true
+ 		}
+ 
+@@ -1299,6 +1317,13 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 			dataMap["IsRevoke"] = true
+ 			dataMap["messageType"] = "revoke"
+ 			setProtocolMessageTypeName(dataMap, "REVOKE")
++		default:
++			// Decrypt failed or plaintext not yet classified as "edit", but envelope
++			// already identified the event as an incoming message edit.
++			if secretEditEnvelope {
++				dataMap["IsEdit"] = true
++				dataMap["messageType"] = "edit"
++			}
+ 		}
+ 
+ 		referral := extractReferralFromMessage(evt.Message)
+
+From ed0511056345d521a7c710ba7efcef019259e8bc Mon Sep 17 00:00:00 2001
+From: cesar carlos <cesar_carlos@msn.com>
+Date: Fri, 17 Jul 2026 19:33:06 +0000
+Subject: [PATCH 4/5] fix: decrypt inbound edits before LID/PN JID swap
+
+DecryptSecretEncryptedMessage derives keys from wire Sender/Chat; swapping
+LID to PN first caused MAC failures despite a stored message secret. Also
+expose decryptFailed when plaintext cannot be recovered.
+
+Co-authored-by: Cursor <cursoragent@cursor.com>
+---
+ docs/wiki/recursos-avancados/events-system.md |  2 +-
+ pkg/whatsmeow/service/whatsmeow.go            | 79 ++++++++++---------
+ 2 files changed, 44 insertions(+), 37 deletions(-)
+
+diff --git a/docs/wiki/recursos-avancados/events-system.md b/docs/wiki/recursos-avancados/events-system.md
+index e2989ff5a..336239142 100644
+--- a/docs/wiki/recursos-avancados/events-system.md
++++ b/docs/wiki/recursos-avancados/events-system.md
+@@ -649,7 +649,7 @@ Após descriptografia, o payload inclui:
+ - Texto novo em `Message.protocolMessage.editedMessage` (ex.: `conversation` ou `extendedTextMessage`)
+ - ID da mensagem original em `Message.protocolMessage.key.ID` (ou, antes do decrypt, em `secretEncryptedMessage.targetMessageKey.ID`)
+ 
+-**Limitação**: o decrypt usa o `messageSecret` da mensagem original armazenado na sessão. Se a mensagem original não estiver no store (ex.: enviada antes da sessão atual), o webhook ainda chega com `secretEncryptedMessage` cifrado (sem texto em claro), mas mantém `IsEdit: true` e `messageType: "edit"` para identificar a ação.
++**Limitação**: o decrypt usa o `messageSecret` da mensagem original armazenado na sessão e deve rodar **antes** de qualquer normalização LID→PN do `Info.Sender`/`Chat`. Se o decrypt falhar, o webhook ainda chega com `IsEdit: true`, `messageType: "edit"` e `decryptFailed: true` (pode manter `secretEncryptedMessage` sem texto em claro).
+ 
+ #### Exclusão (revoke) de mensagem
+ 
+diff --git a/pkg/whatsmeow/service/whatsmeow.go b/pkg/whatsmeow/service/whatsmeow.go
+index dd99978f7..b0a29f9e0 100644
+--- a/pkg/whatsmeow/service/whatsmeow.go
++++ b/pkg/whatsmeow/service/whatsmeow.go
+@@ -1182,6 +1182,46 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 			return
+ 		}
+ 
++		// Decrypt MESSAGE_EDIT BEFORE LID/PN JID swap. whatsmeow derives the edit
++		// key from Info.Sender/Chat as received on the wire; swapping first causes
++		// cipher: message authentication failed even when the secret exists.
++		secretEditEnvelope := false
++		decryptFailed := false
++		if enc := evt.Message.GetSecretEncryptedMessage(); enc != nil &&
++			enc.GetSecretEncType() == waE2E.SecretEncryptedMessage_MESSAGE_EDIT {
++			secretEditEnvelope = true
++			evt.IsEdit = true
++
++			client := mycli.clientPointer[mycli.userID]
++			if client == nil {
++				client = mycli.WAClient
++			}
++			if client == nil {
++				decryptFailed = true
++				mycli.loggerWrapper.GetLogger(mycli.userID).LogWarn(
++					"[%s] No client available to decrypt secret encrypted message edit", mycli.userID)
++			} else {
++				decrypted, err := client.DecryptSecretEncryptedMessage(context.Background(), evt)
++				if err != nil {
++					decryptFailed = true
++					mycli.loggerWrapper.GetLogger(mycli.userID).LogWarn(
++						"[%s] Failed to decrypt secret encrypted message edit: %v",
++						mycli.userID, err)
++				} else {
++					evt.Message = decrypted
++					mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo(
++						"[%s] Decrypted secret encrypted message edit for %s", mycli.userID, evt.Info.ID)
++				}
++			}
++		}
++
++		// EditedMessage wrapper (legacy wire format or post-decrypt). Do not call
++		// UnwrapRaw here — it resets Message from RawMessage and would undo decrypt.
++		if evt.Message != nil && evt.Message.GetEditedMessage().GetMessage() != nil {
++			evt.Message = evt.Message.GetEditedMessage().GetMessage()
++			evt.IsEdit = true
++		}
++
+ 		// Trata o caso especial onde Sender é @lid e SenderAlt é @s.whatsapp.net
+ 		// Neste caso, devemos inverter: Sender e Chat devem ser @s.whatsapp.net, SenderAlt deve ser @lid
+ 		senderStr := evt.Info.Sender.String()
+@@ -1236,42 +1276,6 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 			}()
+ 		}
+ 
+-		// Newer WhatsApp clients send edits as SecretEncryptedMessage(MESSAGE_EDIT).
+-		// Decrypt before classification/marshal so the webhook includes the new text.
+-		secretEditEnvelope := false
+-		if enc := evt.Message.GetSecretEncryptedMessage(); enc != nil &&
+-			enc.GetSecretEncType() == waE2E.SecretEncryptedMessage_MESSAGE_EDIT {
+-			secretEditEnvelope = true
+-			evt.IsEdit = true
+-
+-			client := mycli.clientPointer[mycli.userID]
+-			if client == nil {
+-				client = mycli.WAClient
+-			}
+-			if client == nil {
+-				mycli.loggerWrapper.GetLogger(mycli.userID).LogWarn(
+-					"[%s] No client available to decrypt secret encrypted message edit", mycli.userID)
+-			} else {
+-				decrypted, err := client.DecryptSecretEncryptedMessage(context.Background(), evt)
+-				if err != nil {
+-					mycli.loggerWrapper.GetLogger(mycli.userID).LogWarn(
+-						"[%s] Failed to decrypt secret encrypted message edit (original secret may be missing): %v",
+-						mycli.userID, err)
+-				} else {
+-					evt.Message = decrypted
+-					mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo(
+-						"[%s] Decrypted secret encrypted message edit for %s", mycli.userID, evt.Info.ID)
+-				}
+-			}
+-		}
+-
+-		// EditedMessage wrapper (legacy wire format or post-decrypt). Do not call
+-		// UnwrapRaw here — it resets Message from RawMessage and would undo decrypt.
+-		if evt.Message != nil && evt.Message.GetEditedMessage().GetMessage() != nil {
+-			evt.Message = evt.Message.GetEditedMessage().GetMessage()
+-			evt.IsEdit = true
+-		}
+-
+ 		parsedMessageType := utils.GetMessageType(evt.Message)
+ 		if parsedMessageType == "ignore" || strings.HasPrefix(parsedMessageType, "unknown_protocol_") {
+ 			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Message ignored because it's a unknown protocol message", mycli.userID)
+@@ -1325,6 +1329,9 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 				dataMap["messageType"] = "edit"
+ 			}
+ 		}
++		if decryptFailed {
++			dataMap["decryptFailed"] = true
++		}
+ 
+ 		referral := extractReferralFromMessage(evt.Message)
+ 
+
+From cefe7fed0a0f002d5484a403062041ddba9c6207 Mon Sep 17 00:00:00 2001
+From: cesar-carlos <cesar_carlos@msn.com>
+Date: Thu, 8 Oct 2026 14:29:01 -0400
+Subject: [PATCH 5/5] fix(whatsmeow): isolate edit decryption and preserve
+ webhook fallbacks
+
+---
+ docs/wiki/recursos-avancados/events-system.md |  35 ++-
+ pkg/whatsmeow/service/message_edits.go        | 118 ++++++++++
+ .../service/message_edits_fixtures_test.go    | 143 ++++++++++++
+ .../service/message_edits_handler_test.go     | 194 ++++++++++++++++
+ pkg/whatsmeow/service/message_edits_test.go   | 209 ++++++++++++++++++
+ pkg/whatsmeow/service/whatsmeow.go            |  99 ++-------
+ 6 files changed, 717 insertions(+), 81 deletions(-)
+ create mode 100644 pkg/whatsmeow/service/message_edits.go
+ create mode 100644 pkg/whatsmeow/service/message_edits_fixtures_test.go
+ create mode 100644 pkg/whatsmeow/service/message_edits_handler_test.go
+ create mode 100644 pkg/whatsmeow/service/message_edits_test.go
+
+diff --git a/docs/wiki/recursos-avancados/events-system.md b/docs/wiki/recursos-avancados/events-system.md
+index 336239142..9f06f9840 100644
+--- a/docs/wiki/recursos-avancados/events-system.md
++++ b/docs/wiki/recursos-avancados/events-system.md
+@@ -649,7 +649,34 @@ Após descriptografia, o payload inclui:
+ - Texto novo em `Message.protocolMessage.editedMessage` (ex.: `conversation` ou `extendedTextMessage`)
+ - ID da mensagem original em `Message.protocolMessage.key.ID` (ou, antes do decrypt, em `secretEncryptedMessage.targetMessageKey.ID`)
+ 
+-**Limitação**: o decrypt usa o `messageSecret` da mensagem original armazenado na sessão e deve rodar **antes** de qualquer normalização LID→PN do `Info.Sender`/`Chat`. Se o decrypt falhar, o webhook ainda chega com `IsEdit: true`, `messageType: "edit"` e `decryptFailed: true` (pode manter `secretEncryptedMessage` sem texto em claro).
++O decrypt usa o `messageSecret` da mensagem original armazenado na **mesma sessão
++que recebeu o evento**, com prazo de cinco segundos para consultar o segredo.
++Ele roda **antes** de qualquer normalização LID→PN de `Info.Sender`/`Chat`.
++O evento original do whatsmeow é preservado; somente a cópia publicada tem JIDs
++normalizados e conteúdo descriptografado.
++
++Se a sessão/segredo estiver indisponível, houver falha de autenticação, IV inválido,
++timeout ou conteúdo descriptografado inválido, o webhook continua chegando com
++`IsEdit: true`, `messageType: "edit"` e `decryptFailed: true`. O envelope
++`Message.secretEncryptedMessage` e sua `targetMessageKey` são mantidos quando
++presentes. O processamento não busca outra sessão nem repete a operação após
++uma falha retornada pelo whatsmeow.
++Em grupos, esse fallback também dispensa a consulta de metadados opcionais ao
++WhatsApp, para não impedir a publicação quando a sessão estiver indisponível.
++
++Quando o conteúdo criptografado contém apenas o novo texto, o servidor mantém
++o formato `protocolMessage.editedMessage`, usando a chave real do envelope como
++`protocolMessage.key`. `Info.ID` continua sendo o ID do evento de edição, não
++o ID da mensagem original.
++
++Edições legadas já identificadas por `IsEdit` também recebem `messageType: "edit"`,
++mesmo quando `Message` contém o texto diretamente e não tem `protocolMessage`.
++Nesses casos, não é inventada uma chave para a mensagem original.
++
++Edições de newsletter/canal são identificadas por `NewsletterMeta.EditTS` e também
++recebem `IsEdit` / `messageType: "edit"`. Nesse formato específico, o whatsmeow
++fornece o texto diretamente em `Message` e `Info.ID` já é o ID da mensagem original.
++Uma mensagem normal de newsletter sem `EditTS` não é marcada como edição.
+ 
+ #### Exclusão (revoke) de mensagem
+ 
+@@ -659,9 +686,13 @@ O payload inclui:
+ 
+ - `IsRevoke: true`
+ - `messageType: "revoke"`
+-- `Message.protocolMessage.typeName: "REVOKE"` (equivalente ao `type: 0` / `Info.Edit: "7"`)
++- `Message.protocolMessage.typeName: "REVOKE"` (para o `type: 0` explicitamente presente)
+ - ID da mensagem apagada em `Message.protocolMessage.key.ID`
+ 
++O campo numérico `type` é preservado. Um protocolo sem tipo explícito não é
++classificado como exclusão apenas porque o valor padrão do enum é zero.
++Mensagens comuns e outros tipos de envelopes criptografados mantêm seu contrato.
++
+ ### Eventos de Grupos
+ 
+ **Categoria**: `GROUP`
+diff --git a/pkg/whatsmeow/service/message_edits.go b/pkg/whatsmeow/service/message_edits.go
+new file mode 100644
+index 000000000..e31346a94
+--- /dev/null
++++ b/pkg/whatsmeow/service/message_edits.go
+@@ -0,0 +1,118 @@
++package whatsmeow_service
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"time"
++
++	"go.mau.fi/whatsmeow"
++	"go.mau.fi/whatsmeow/proto/waCommon"
++	"go.mau.fi/whatsmeow/proto/waE2E"
++	"go.mau.fi/whatsmeow/types/events"
++	"google.golang.org/protobuf/proto"
++)
++
++const messageEditDecryptTimeout = 5 * time.Second
++
++var errInvalidMessageEdit = errors.New("invalid encrypted message edit")
++
++// prepareIncomingMessageEdit operates on a caller-owned event before any JID
++// normalization. The session client owns the secret store; consulting the shared
++// client map could select a replacement session or race with its registration.
++// A failed edit keeps its encrypted envelope and original target key.
++func prepareIncomingMessageEdit(ctx context.Context, client *whatsmeow.Client, evt *events.Message) (bool, error) {
++	unwrapMessageForWebhook(evt, evt.Message)
++	// Newsletter edits arrive as new content with the original message ID,
++	// identified by EditTS rather than an EditedMessage wrapper.
++	if evt.NewsletterMeta != nil && !evt.NewsletterMeta.EditTS.IsZero() {
++		evt.IsEdit = true
++	}
++	enc := evt.Message.GetSecretEncryptedMessage()
++	if enc == nil || enc.GetSecretEncType() != waE2E.SecretEncryptedMessage_MESSAGE_EDIT {
++		return false, nil
++	}
++	evt.IsEdit = true
++	// whatsmeow uses standard AES-GCM with a 12-byte nonce. GCM.Open panics
++	// for a nonce of the wrong length, so reject it before calling the library.
++	if len(enc.GetEncIV()) != 12 || enc.GetTargetMessageKey().GetID() == "" {
++		return true, errInvalidMessageEdit
++	}
++	if client == nil {
++		return true, whatsmeow.ErrClientIsNil
++	}
++	if client.Store == nil || client.Store.MsgSecrets == nil {
++		return true, errors.New("message secret store unavailable")
++	}
++	ctx, cancel := context.WithTimeout(ctx, messageEditDecryptTimeout)
++	defer cancel()
++	decrypted, err := client.DecryptSecretEncryptedMessage(ctx, evt)
++	if err != nil {
++		return true, fmt.Errorf("decrypt incoming message edit: %w", err)
++	}
++	decoded := *evt
++	unwrapMessageForWebhook(&decoded, decrypted)
++	if pm := decoded.Message.GetProtocolMessage(); pm != nil {
++		if pm.Type == nil || pm.GetType() != waE2E.ProtocolMessage_MESSAGE_EDIT ||
++			pm.GetKey().GetID() != enc.GetTargetMessageKey().GetID() ||
++			pm.GetEditedMessage() == nil || proto.Size(pm.GetEditedMessage()) == 0 {
++			return true, errInvalidMessageEdit
++		}
++	} else if decoded.Message != nil && (decoded.Message.Conversation != nil ||
++		(decoded.Message.ExtendedTextMessage != nil && decoded.Message.ExtendedTextMessage.Text != nil)) {
++		// If an envelope contains the edited text directly, keep the real target
++		// key in the same protocol shape consumers use for ordinary message edits.
++		decoded.Message = &waE2E.Message{
++			MessageContextInfo: decoded.Message.GetMessageContextInfo(),
++			ProtocolMessage: &waE2E.ProtocolMessage{
++				Type:          waE2E.ProtocolMessage_MESSAGE_EDIT.Enum(),
++				Key:           proto.Clone(enc.GetTargetMessageKey()).(*waCommon.MessageKey),
++				EditedMessage: decoded.Message,
++			},
++		}
++	} else {
++		return true, errInvalidMessageEdit
++	}
++	*evt = decoded
++	return false, nil
++}
++
++// UnwrapRaw is safe on this local copy only after temporarily replacing its raw
++// pointer. Restore the wire envelope so decrypt never resets from ciphertext.
++func unwrapMessageForWebhook(evt *events.Message, message *waE2E.Message) {
++	wire := evt.RawMessage
++	evt.RawMessage = message
++	evt.UnwrapRaw()
++	evt.RawMessage = wire
++}
++
++func annotateMessageAction(dataMap map[string]interface{}, evt *events.Message, decryptFailed bool) {
++	pm := evt.Message.GetProtocolMessage()
++	if pm != nil && pm.Type != nil && pm.GetType() == waE2E.ProtocolMessage_REVOKE && pm.GetKey().GetID() != "" {
++		dataMap["IsRevoke"] = true
++		dataMap["messageType"] = "revoke"
++		setProtocolMessageTypeName(dataMap, "REVOKE")
++	} else if evt.IsEdit || (pm != nil && pm.Type != nil && pm.GetType() == waE2E.ProtocolMessage_MESSAGE_EDIT) {
++		dataMap["IsEdit"] = true
++		dataMap["messageType"] = "edit"
++		if pm != nil && pm.Type != nil && pm.GetType() == waE2E.ProtocolMessage_MESSAGE_EDIT {
++			setProtocolMessageTypeName(dataMap, "MESSAGE_EDIT")
++		}
++	}
++	if decryptFailed {
++		dataMap["decryptFailed"] = true
++	}
++}
++
++// setProtocolMessageTypeName preserves the numeric enum serialized by protobuf.
++func setProtocolMessageTypeName(dataMap map[string]interface{}, typeName string) {
++	message, ok := dataMap["Message"].(map[string]interface{})
++	if !ok {
++		return
++	}
++	pm, ok := message["protocolMessage"].(map[string]interface{})
++	if !ok {
++		return
++	}
++	pm["typeName"] = typeName
++}
+diff --git a/pkg/whatsmeow/service/message_edits_fixtures_test.go b/pkg/whatsmeow/service/message_edits_fixtures_test.go
+new file mode 100644
+index 000000000..5645641ce
+--- /dev/null
++++ b/pkg/whatsmeow/service/message_edits_fixtures_test.go
+@@ -0,0 +1,143 @@
++package whatsmeow_service
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"testing"
++	"time"
++
++	"github.com/evolution-foundation/evolution-go/pkg/config"
++	instance_model "github.com/evolution-foundation/evolution-go/pkg/instance/model"
++	logger_wrapper "github.com/evolution-foundation/evolution-go/pkg/logger"
++	"go.mau.fi/whatsmeow"
++	"go.mau.fi/whatsmeow/proto/waCommon"
++	"go.mau.fi/whatsmeow/proto/waE2E"
++	"go.mau.fi/whatsmeow/store"
++	"go.mau.fi/whatsmeow/types"
++	"go.mau.fi/whatsmeow/types/events"
++	"go.mau.fi/whatsmeow/util/gcmutil"
++	"go.mau.fi/whatsmeow/util/hkdfutil"
++	"google.golang.org/protobuf/proto"
++)
++
++const editTestInstanceID = "edit-instance"
++const editTestTargetID = "original-message"
++
++type editTestSecretStore struct {
++	store.MsgSecretStore
++	get func(context.Context, types.JID, types.JID, types.MessageID) ([]byte, types.JID, error)
++}
++
++func (s *editTestSecretStore) GetMessageSecret(ctx context.Context, chat, sender types.JID, id types.MessageID) ([]byte, types.JID, error) {
++	return s.get(ctx, chat, sender, id)
++}
++
++func editTestInfo() types.MessageInfo {
++	return types.MessageInfo{
++		ID: "edit-event", Type: "text", Edit: "1", Timestamp: time.Unix(1700000000, 0),
++		MessageSource: types.MessageSource{
++			Chat:      types.NewJID("100", types.HiddenUserServer),
++			Sender:    types.JID{User: "100", Server: types.HiddenUserServer, Device: 3},
++			SenderAlt: types.JID{User: "5511999999999", Server: types.DefaultUserServer, Device: 3},
++		},
++	}
++}
++
++func editTestProtocol(text string) *waE2E.Message {
++	return &waE2E.Message{ProtocolMessage: &waE2E.ProtocolMessage{
++		Type:          waE2E.ProtocolMessage_MESSAGE_EDIT.Enum(),
++		Key:           &waCommon.MessageKey{ID: proto.String(editTestTargetID)},
++		EditedMessage: &waE2E.Message{Conversation: proto.String(text)},
++	}}
++}
++
++// Construct a real authenticated payload using the pinned whatsmeow wire format,
++// then let its public decryption API validate the fixture in production code.
++func encryptedEditFixture(t *testing.T, info types.MessageInfo, plaintext []byte) (*events.Message, *whatsmeow.Client) {
++	t.Helper()
++	secret := bytes.Repeat([]byte{0x42}, 32)
++	sender := info.Sender.ToNonAD().String()
++	key := hkdfutil.SHA256(secret, nil, []byte(editTestTargetID+sender+sender+string(whatsmeow.EncSecretMessageEdit)), 32)
++	iv := bytes.Repeat([]byte{0x24}, 12)
++	ciphertext, err := gcmutil.Encrypt(key, iv, plaintext, nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	message := &waE2E.Message{SecretEncryptedMessage: &waE2E.SecretEncryptedMessage{
++		SecretEncType: waE2E.SecretEncryptedMessage_MESSAGE_EDIT.Enum(),
++		EncIV:         iv, EncPayload: ciphertext,
++		TargetMessageKey: &waCommon.MessageKey{
++			ID: proto.String(editTestTargetID), RemoteJID: proto.String(info.Chat.String()), FromMe: proto.Bool(true),
++		},
++	}}
++	secrets := &editTestSecretStore{get: func(ctx context.Context, chat, originalSender types.JID, id types.MessageID) ([]byte, types.JID, error) {
++		if chat != info.Chat || originalSender != info.Sender || id != editTestTargetID {
++			t.Errorf("secret queried with changed wire identity: chat=%s sender=%s id=%s", chat, originalSender, id)
++		}
++		if _, ok := ctx.Deadline(); !ok {
++			t.Error("secret lookup has no deadline")
++		}
++		return secret, info.Sender, nil
++	}}
++	return &events.Message{Info: info, Message: message, RawMessage: message}, &whatsmeow.Client{Store: &store.Device{MsgSecrets: secrets}}
++}
++
++func marshalEditFixture(t *testing.T, message *waE2E.Message) []byte {
++	t.Helper()
++	data, err := proto.Marshal(message)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return data
++}
++
++type editWebhookCapture struct {
++	WhatsmeowService
++	data  chan []byte
++	done  chan struct{}
++	queue string
++}
++
++func (c *editWebhookCapture) CallWebhook(instance *instance_model.Instance, queue string, payload []byte) {
++	defer close(c.done)
++	c.queue = queue
++	c.data <- append([]byte(nil), payload...)
++}
++
++func editHandlerFixture(t *testing.T, client *whatsmeow.Client) (*MyClient, *editWebhookCapture) {
++	t.Helper()
++	cfg := &config.Config{LogDirectory: t.TempDir(), LogMaxSize: 1}
++	manager := logger_wrapper.NewLoggerManager(cfg)
++	t.Cleanup(func() {
++		if err := manager.GetLogger(editTestInstanceID).Close(); err != nil {
++			t.Error(err)
++		}
++	})
++	capture := &editWebhookCapture{data: make(chan []byte, 1), done: make(chan struct{})}
++	return &MyClient{
++		WAClient: client, Instance: &instance_model.Instance{Id: editTestInstanceID, Name: "edit-test"},
++		userID: editTestInstanceID, token: "test-token", config: cfg,
++		service: capture, loggerWrapper: manager,
++	}, capture
++}
++
++func capturedEditWebhook(t *testing.T, capture *editWebhookCapture) map[string]interface{} {
++	t.Helper()
++	select {
++	case <-capture.done:
++	case <-time.After(3 * time.Second):
++		t.Fatal("webhook worker did not complete")
++	}
++	var post map[string]interface{}
++	if err := json.Unmarshal(<-capture.data, &post); err != nil {
++		t.Fatal(err)
++	}
++	if post["event"] != "Message" || post["instanceId"] != editTestInstanceID {
++		t.Fatal(post)
++	}
++	if capture.queue != editTestInstanceID+".message" {
++		t.Fatalf("changed message queue: %q", capture.queue)
++	}
++	return post["data"].(map[string]interface{})
++}
+diff --git a/pkg/whatsmeow/service/message_edits_handler_test.go b/pkg/whatsmeow/service/message_edits_handler_test.go
+new file mode 100644
+index 000000000..c5e7f7f52
+--- /dev/null
++++ b/pkg/whatsmeow/service/message_edits_handler_test.go
+@@ -0,0 +1,194 @@
++package whatsmeow_service
++
++import (
++	"context"
++	"errors"
++	"os"
++	"path/filepath"
++	"reflect"
++	"strings"
++	"testing"
++	"time"
++
++	"go.mau.fi/whatsmeow"
++	"go.mau.fi/whatsmeow/proto/waCommon"
++	"go.mau.fi/whatsmeow/proto/waE2E"
++	"go.mau.fi/whatsmeow/types"
++	"go.mau.fi/whatsmeow/types/events"
++	"google.golang.org/protobuf/proto"
++)
++
++func TestIncomingEditUsesOwningClientAndPreservesWireEvent(t *testing.T) {
++	event, owner := encryptedEditFixture(t, editTestInfo(), marshalEditFixture(t, editTestProtocol("edited")))
++	info, wire := event.Info, proto.Clone(event.Message)
++	handler, capture := editHandlerFixture(t, owner)
++	// A replacement session's map entry must not choose this event's secret store.
++	handler.clientPointer = map[string]*whatsmeow.Client{editTestInstanceID: {}}
++	handler.myEventHandler(event)
++	data := capturedEditWebhook(t, capture)
++	pm := data["Message"].(map[string]interface{})["protocolMessage"].(map[string]interface{})
++	if data["IsEdit"] != true || data["messageType"] != "edit" || pm["typeName"] != "MESSAGE_EDIT" || pm["type"] != float64(14) {
++		t.Fatal("incomplete edit classification", data)
++	}
++	if pm["key"].(map[string]interface{})["ID"] != editTestTargetID || pm["editedMessage"].(map[string]interface{})["conversation"] != "edited" {
++		t.Fatal("missing target or plaintext", pm)
++	}
++	if _, exists := data["decryptFailed"]; exists {
++		t.Fatal("successful decryption marked failed")
++	}
++	normalized := data["Info"].(map[string]interface{})
++	if normalized["Sender"] != info.SenderAlt.ToNonAD().String() || normalized["Chat"] != info.SenderAlt.ToNonAD().String() {
++		t.Fatal("webhook JID normalization changed", normalized)
++	}
++	if normalized["ID"] != info.ID {
++		t.Fatal("edit event ID was replaced with target ID")
++	}
++	if !reflect.DeepEqual(info, event.Info) || event.IsEdit || !proto.Equal(wire, event.Message) || !proto.Equal(wire, event.RawMessage) {
++		t.Fatal("shared whatsmeow event was modified")
++	}
++	if _, exists := data["RawMessage"]; exists {
++		t.Fatal("raw encrypted envelope leaked into successful webhook")
++	}
++}
++
++func TestIncomingLegacyEditFlags(t *testing.T) {
++	for _, mode := range []string{"already_unwrapped", "legacy_wrapper", "newsletter_edit"} {
++		t.Run(mode, func(t *testing.T) {
++			text := &waE2E.Message{Conversation: proto.String("legacy edit")}
++			event := &events.Message{Info: editTestInfo(), Message: text, IsEdit: mode == "already_unwrapped"}
++			if mode == "legacy_wrapper" {
++				event.Message = &waE2E.Message{EditedMessage: &waE2E.FutureProofMessage{Message: text}}
++			}
++			if mode == "newsletter_edit" {
++				event.Info.Chat = types.NewJID("channel", types.NewsletterServer)
++				event.Info.ID = editTestTargetID
++				event.NewsletterMeta = &events.NewsletterMessageMeta{EditTS: time.Unix(1700000001, 0)}
++			}
++			event.RawMessage = event.Message
++			wire := proto.Clone(event.Message)
++			handler, capture := editHandlerFixture(t, nil)
++			handler.myEventHandler(event)
++			data := capturedEditWebhook(t, capture)
++			if data["IsEdit"] != true || data["messageType"] != "edit" || data["Message"].(map[string]interface{})["conversation"] != "legacy edit" {
++				t.Fatal("legacy edit classification was lost", data)
++			}
++			if _, exists := data["decryptFailed"]; exists {
++				t.Fatal("unencrypted edit was marked as decrypt failure")
++			}
++			if !proto.Equal(wire, event.Message) {
++				t.Fatal("legacy source message was modified")
++			}
++		})
++	}
++}
++
++func TestIncomingEditFailuresAreForwardedWithoutPanic(t *testing.T) {
++	for _, mode := range []string{"no_client", "no_store", "no_secrets", "bad_nonce", "bad_mac", "unknown_protocol", "empty_plaintext", "store_failure", "group_no_client", "group_no_store", "group_bad_mac"} {
++		t.Run(mode, func(t *testing.T) {
++			defer func() {
++				if recovered := recover(); recovered != nil {
++					t.Fatalf("incoming edit panicked: %v", recovered)
++				}
++			}()
++			message := editTestProtocol("edited")
++			if mode == "unknown_protocol" {
++				message.ProtocolMessage.Type = waE2E.ProtocolMessage_HISTORY_SYNC_NOTIFICATION.Enum()
++			}
++			plaintext := marshalEditFixture(t, message)
++			if mode == "empty_plaintext" {
++				plaintext = nil
++			}
++			info := editTestInfo()
++			if strings.HasPrefix(mode, "group_") {
++				info.Chat = types.NewJID("group", types.GroupServer)
++				info.IsGroup = true
++			}
++			event, client := encryptedEditFixture(t, info, plaintext)
++			switch mode {
++			case "no_client", "group_no_client":
++				client = nil
++			case "no_store", "group_no_store":
++				client.Store = nil
++			case "no_secrets":
++				client.Store.MsgSecrets = nil
++			case "bad_nonce":
++				event.Message.SecretEncryptedMessage.EncIV = []byte{1}
++			case "bad_mac", "group_bad_mac":
++				event.Message.SecretEncryptedMessage.EncPayload[0] ^= 0xff
++			case "store_failure":
++				client.Store.MsgSecrets = &editTestSecretStore{get: func(context.Context, types.JID, types.JID, types.MessageID) ([]byte, types.JID, error) {
++					return nil, types.EmptyJID, errors.New("private-connection-string-do-not-log")
++				}}
++			}
++			wire := proto.Clone(event.Message)
++			handler, capture := editHandlerFixture(t, client)
++			handler.myEventHandler(event)
++			data := capturedEditWebhook(t, capture)
++			if data["IsEdit"] != true || data["messageType"] != "edit" || data["decryptFailed"] != true {
++				t.Fatal("edit failure was not forwarded", data)
++			}
++			encrypted := data["Message"].(map[string]interface{})["secretEncryptedMessage"].(map[string]interface{})
++			if encrypted["targetMessageKey"].(map[string]interface{})["ID"] != editTestTargetID {
++				t.Fatal("failed edit lost original target", encrypted)
++			}
++			if event.IsEdit || !proto.Equal(wire, event.Message) {
++				t.Fatal("failure modified original event")
++			}
++			if mode == "store_failure" {
++				logData, err := os.ReadFile(filepath.Join(handler.config.LogDirectory, editTestInstanceID, "instance.log"))
++				if err != nil {
++					t.Fatal(err)
++				}
++				if strings.Contains(string(logData), "private-connection-string-do-not-log") {
++					t.Fatal("private store error was logged")
++				}
++			}
++		})
++	}
++}
++
++func TestIncomingRevokeAndOrdinaryMessageClassification(t *testing.T) {
++	for _, mode := range []string{"revoke", "missing_protocol_type", "ordinary_text", "newsletter_message", "outbound_edit"} {
++		t.Run(mode, func(t *testing.T) {
++			message := &waE2E.Message{Conversation: proto.String("ordinary")}
++			if mode == "revoke" || mode == "missing_protocol_type" {
++				message = &waE2E.Message{ProtocolMessage: &waE2E.ProtocolMessage{Type: waE2E.ProtocolMessage_REVOKE.Enum(), Key: &waCommon.MessageKey{ID: proto.String(editTestTargetID)}}}
++				if mode == "missing_protocol_type" {
++					message.ProtocolMessage.Type = nil
++				}
++			}
++			if mode == "outbound_edit" {
++				message = editTestProtocol("outbound edit")
++			}
++			event := &events.Message{Info: editTestInfo(), Message: message, RawMessage: message}
++			if mode == "newsletter_message" {
++				event.NewsletterMeta = &events.NewsletterMessageMeta{OriginalTS: time.Unix(1700000000, 0)}
++			}
++			event.Info.IsFromMe = mode == "outbound_edit"
++			wire := proto.Clone(message)
++			handler, capture := editHandlerFixture(t, nil)
++			handler.myEventHandler(event)
++			data := capturedEditWebhook(t, capture)
++			if mode == "revoke" {
++				pm := data["Message"].(map[string]interface{})["protocolMessage"].(map[string]interface{})
++				if data["IsRevoke"] != true || data["messageType"] != "revoke" || pm["type"] != float64(0) || pm["typeName"] != "REVOKE" {
++					t.Fatal(data)
++				}
++			} else if mode == "outbound_edit" {
++				if data["IsEdit"] != true || data["messageType"] != "edit" || data["Info"].(map[string]interface{})["IsFromMe"] != true {
++					t.Fatal(data)
++				}
++			} else {
++				if _, exists := data["messageType"]; exists {
++					t.Fatal("ordinary or ambiguous message classified as edit/revoke", data)
++				}
++				if _, exists := data["IsRevoke"]; exists {
++					t.Fatal("missing enum type interpreted as REVOKE")
++				}
++			}
++			if !proto.Equal(wire, event.Message) {
++				t.Fatal("original plaintext was changed")
++			}
++		})
++	}
++}
+diff --git a/pkg/whatsmeow/service/message_edits_test.go b/pkg/whatsmeow/service/message_edits_test.go
+new file mode 100644
+index 000000000..0586f736f
+--- /dev/null
++++ b/pkg/whatsmeow/service/message_edits_test.go
+@@ -0,0 +1,209 @@
++package whatsmeow_service
++
++import (
++	"context"
++	"errors"
++	"reflect"
++	"sync"
++	"testing"
++	"time"
++
++	"go.mau.fi/whatsmeow"
++	"go.mau.fi/whatsmeow/proto/waE2E"
++	"go.mau.fi/whatsmeow/store"
++	"go.mau.fi/whatsmeow/types"
++	"google.golang.org/protobuf/proto"
++)
++
++func TestPrepareIncomingMessageEditDecryptsWireIdentities(t *testing.T) {
++	for _, source := range []string{"incoming_lid", "group_lid", "outgoing_echo"} {
++		for _, shape := range []string{"protocol", "legacy_wrapper", "ephemeral_wrapper", "plain_text", "empty_text", "extended_text"} {
++			t.Run(source+"/"+shape, func(t *testing.T) {
++				info := editTestInfo()
++				if source == "group_lid" {
++					info.Chat = types.NewJID("group", types.GroupServer)
++					info.IsGroup = true
++				}
++				if source == "outgoing_echo" {
++					info.IsFromMe = true
++				}
++				message := editTestProtocol("edited")
++				switch shape {
++				case "legacy_wrapper":
++					message = &waE2E.Message{EditedMessage: &waE2E.FutureProofMessage{Message: message}}
++				case "ephemeral_wrapper":
++					message = &waE2E.Message{EphemeralMessage: &waE2E.FutureProofMessage{Message: message}}
++				case "plain_text":
++					message = &waE2E.Message{Conversation: proto.String("edited")}
++				case "empty_text":
++					message = &waE2E.Message{Conversation: proto.String("")}
++				case "extended_text":
++					message = &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{Text: proto.String("edited"), ContextInfo: &waE2E.ContextInfo{StanzaID: proto.String("quoted")}}}
++				}
++				original, client := encryptedEditFixture(t, info, marshalEditFixture(t, message))
++				wire := proto.Clone(original.Message)
++				owned := *original
++				failed, err := prepareIncomingMessageEdit(context.Background(), client, &owned)
++				if err != nil || failed {
++					t.Fatalf("decrypt failed=%v err=%v", failed, err)
++				}
++				pm := owned.Message.GetProtocolMessage()
++				if !owned.IsEdit || pm.GetType() != waE2E.ProtocolMessage_MESSAGE_EDIT || pm.GetKey().GetID() != editTestTargetID {
++					t.Fatalf("incomplete edit: %#v", owned)
++				}
++				if shape == "extended_text" {
++					if pm.GetEditedMessage().GetExtendedTextMessage().GetContextInfo().GetStanzaID() != "quoted" {
++						t.Fatal("quote context was lost")
++					}
++				} else if shape != "empty_text" && pm.GetEditedMessage().GetConversation() != "edited" {
++					t.Fatal("edited text was lost")
++				}
++				if owned.IsEphemeral != (shape == "ephemeral_wrapper") {
++					t.Fatal("wrapper flags were lost")
++				}
++				if !reflect.DeepEqual(original.Info, owned.Info) || owned.RawMessage != original.RawMessage || !proto.Equal(original.Message, wire) || original.IsEdit {
++					t.Fatal("wire event or JIDs were modified")
++				}
++			})
++		}
++	}
++}
++
++func TestPrepareIncomingMessageEditFailureRetainsEnvelope(t *testing.T) {
++	for _, mode := range []string{"no_client", "no_store", "no_secrets", "missing_secret", "store_error", "bad_nonce", "bad_mac", "missing_target", "invalid_protobuf", "empty_plaintext", "unknown_protocol", "wrong_target", "missing_edit_body"} {
++		t.Run(mode, func(t *testing.T) {
++			message := editTestProtocol("edited")
++			if mode == "unknown_protocol" {
++				message.ProtocolMessage.Type = waE2E.ProtocolMessage_HISTORY_SYNC_NOTIFICATION.Enum()
++			}
++			if mode == "wrong_target" {
++				message.ProtocolMessage.Key.ID = proto.String("different-message")
++			}
++			if mode == "missing_edit_body" {
++				message.ProtocolMessage.EditedMessage = nil
++			}
++			plaintext := marshalEditFixture(t, message)
++			if mode == "invalid_protobuf" {
++				plaintext = []byte{0xff}
++			}
++			if mode == "empty_plaintext" {
++				plaintext = nil
++			}
++			event, client := encryptedEditFixture(t, editTestInfo(), plaintext)
++			storeFailure := errors.New("store unavailable")
++			switch mode {
++			case "no_client":
++				client = nil
++			case "no_store":
++				client.Store = nil
++			case "no_secrets":
++				client.Store.MsgSecrets = nil
++			case "missing_secret":
++				client.Store.MsgSecrets = &editTestSecretStore{get: func(context.Context, types.JID, types.JID, types.MessageID) ([]byte, types.JID, error) {
++					return nil, types.EmptyJID, nil
++				}}
++			case "store_error":
++				client.Store.MsgSecrets = &editTestSecretStore{get: func(context.Context, types.JID, types.JID, types.MessageID) ([]byte, types.JID, error) {
++					return nil, types.EmptyJID, storeFailure
++				}}
++			case "bad_nonce":
++				event.Message.SecretEncryptedMessage.EncIV = []byte{1}
++			case "bad_mac":
++				event.Message.SecretEncryptedMessage.EncPayload[0] ^= 0xff
++			case "missing_target":
++				event.Message.SecretEncryptedMessage.TargetMessageKey = nil
++			}
++			wire := proto.Clone(event.Message)
++			failed, err := prepareIncomingMessageEdit(context.Background(), client, event)
++			if err == nil || !failed || !event.IsEdit || !proto.Equal(event.Message, wire) {
++				t.Fatalf("failure lost edit envelope: failed=%v err=%v", failed, err)
++			}
++			if mode == "store_error" && !errors.Is(err, storeFailure) {
++				t.Fatal("store error cause was lost")
++			}
++			if mode == "missing_secret" && !errors.Is(err, whatsmeow.ErrOriginalMessageSecretNotFound) {
++				t.Fatal("missing-secret cause was lost")
++			}
++		})
++	}
++}
++
++func TestPrepareIncomingMessageEditContextIsBoundedAndCancelled(t *testing.T) {
++	for _, mode := range []string{"success", "parent_cancel", "parent_deadline"} {
++		t.Run(mode, func(t *testing.T) {
++			event, client := encryptedEditFixture(t, editTestInfo(), marshalEditFixture(t, editTestProtocol("edited")))
++			var lookupCtx context.Context
++			secretStore := client.Store.MsgSecrets
++			client.Store.MsgSecrets = &editTestSecretStore{get: func(ctx context.Context, chat, sender types.JID, id types.MessageID) ([]byte, types.JID, error) {
++				lookupCtx = ctx
++				deadline, ok := ctx.Deadline()
++				if !ok || time.Until(deadline) > messageEditDecryptTimeout {
++					t.Error("lookup has no finite edit deadline")
++				}
++				if mode != "success" {
++					<-ctx.Done()
++					return nil, types.EmptyJID, ctx.Err()
++				}
++				return secretStore.GetMessageSecret(ctx, chat, sender, id)
++			}}
++			ctx, cancel := context.WithCancel(context.Background())
++			if mode == "parent_cancel" {
++				cancel()
++			}
++			if mode == "parent_deadline" {
++				cancel()
++				ctx, cancel = context.WithTimeout(context.Background(), 20*time.Millisecond)
++			}
++			defer cancel()
++			failed, err := prepareIncomingMessageEdit(ctx, client, event)
++			if mode == "success" && (failed || err != nil) {
++				t.Fatal(err)
++			}
++			if mode == "parent_cancel" && (!failed || !errors.Is(err, context.Canceled)) {
++				t.Fatal(err)
++			}
++			if mode == "parent_deadline" && (!failed || !errors.Is(err, context.DeadlineExceeded)) {
++				t.Fatal(err)
++			}
++			select {
++			case <-lookupCtx.Done():
++			default:
++				t.Fatal("owned lookup context was not cancelled")
++			}
++		})
++	}
++}
++
++func TestConcurrentMessageEditCopiesKeepWireEventUnchanged(t *testing.T) {
++	original, client := encryptedEditFixture(t, editTestInfo(), marshalEditFixture(t, editTestProtocol("edited")))
++	wire := proto.Clone(original.Message)
++	var workers sync.WaitGroup
++	for range 20 {
++		workers.Add(1)
++		go func() {
++			defer workers.Done()
++			owned := *original
++			if failed, err := prepareIncomingMessageEdit(context.Background(), client, &owned); failed || err != nil {
++				t.Errorf("failed=%v err=%v", failed, err)
++			}
++		}()
++	}
++	workers.Wait()
++	if original.IsEdit || !proto.Equal(original.Message, wire) {
++		t.Fatal("shared wire event was modified")
++	}
++}
++
++func TestOtherEncryptedMessageKindsAreUntouched(t *testing.T) {
++	event, _ := encryptedEditFixture(t, editTestInfo(), nil)
++	event.Message.SecretEncryptedMessage.SecretEncType = waE2E.SecretEncryptedMessage_EVENT_EDIT.Enum()
++	wire := proto.Clone(event.Message)
++	client := &whatsmeow.Client{Store: &store.Device{MsgSecrets: &editTestSecretStore{get: func(context.Context, types.JID, types.JID, types.MessageID) ([]byte, types.JID, error) {
++		t.Fatal("non-message edit queried secret store")
++		return nil, types.EmptyJID, nil
++	}}}}
++	failed, err := prepareIncomingMessageEdit(context.Background(), client, event)
++	if failed || err != nil || event.IsEdit || !proto.Equal(wire, event.Message) {
++		t.Fatal("unrelated encrypted message was changed")
++	}
++}
+diff --git a/pkg/whatsmeow/service/whatsmeow.go b/pkg/whatsmeow/service/whatsmeow.go
+index b0a29f9e0..3f31580a0 100644
+--- a/pkg/whatsmeow/service/whatsmeow.go
++++ b/pkg/whatsmeow/service/whatsmeow.go
+@@ -1133,6 +1133,14 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 
+ 		postMap["data"] = dataMap
+ 	case *events.Message:
++		if evt == nil {
++			return
++		}
++		// whatsmeow may deliver this event to other handlers. Normalize an owned
++		// copy; protobuf messages remain read-only unless replaced after decrypt.
++		messageEvent := *evt
++		evt = &messageEvent
++		postMap["data"] = evt
+ 		doWebhook = true
+ 		postMap["event"] = "Message"
+ 		// Message received
+@@ -1182,44 +1190,12 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 			return
+ 		}
+ 
+-		// Decrypt MESSAGE_EDIT BEFORE LID/PN JID swap. whatsmeow derives the edit
+-		// key from Info.Sender/Chat as received on the wire; swapping first causes
+-		// cipher: message authentication failed even when the secret exists.
+-		secretEditEnvelope := false
+-		decryptFailed := false
+-		if enc := evt.Message.GetSecretEncryptedMessage(); enc != nil &&
+-			enc.GetSecretEncType() == waE2E.SecretEncryptedMessage_MESSAGE_EDIT {
+-			secretEditEnvelope = true
+-			evt.IsEdit = true
+-
+-			client := mycli.clientPointer[mycli.userID]
+-			if client == nil {
+-				client = mycli.WAClient
+-			}
+-			if client == nil {
+-				decryptFailed = true
+-				mycli.loggerWrapper.GetLogger(mycli.userID).LogWarn(
+-					"[%s] No client available to decrypt secret encrypted message edit", mycli.userID)
+-			} else {
+-				decrypted, err := client.DecryptSecretEncryptedMessage(context.Background(), evt)
+-				if err != nil {
+-					decryptFailed = true
+-					mycli.loggerWrapper.GetLogger(mycli.userID).LogWarn(
+-						"[%s] Failed to decrypt secret encrypted message edit: %v",
+-						mycli.userID, err)
+-				} else {
+-					evt.Message = decrypted
+-					mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo(
+-						"[%s] Decrypted secret encrypted message edit for %s", mycli.userID, evt.Info.ID)
+-				}
+-			}
+-		}
+-
+-		// EditedMessage wrapper (legacy wire format or post-decrypt). Do not call
+-		// UnwrapRaw here — it resets Message from RawMessage and would undo decrypt.
+-		if evt.Message != nil && evt.Message.GetEditedMessage().GetMessage() != nil {
+-			evt.Message = evt.Message.GetEditedMessage().GetMessage()
+-			evt.IsEdit = true
++		// Decrypt with the owning session before changing the wire JIDs.
++		decryptFailed, err := prepareIncomingMessageEdit(context.Background(), mycli.WAClient, evt)
++		if err != nil {
++			// Store/crypto errors can include private identifiers or credentials.
++			mycli.loggerWrapper.GetLogger(mycli.userID).LogWarn(
++				"[%s] Could not decrypt incoming message edit %s; forwarding encrypted envelope", mycli.userID, evt.Info.ID)
+ 		}
+ 
+ 		// Trata o caso especial onde Sender é @lid e SenderAlt é @s.whatsapp.net
+@@ -1277,12 +1253,12 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 		}
+ 
+ 		parsedMessageType := utils.GetMessageType(evt.Message)
+-		if parsedMessageType == "ignore" || strings.HasPrefix(parsedMessageType, "unknown_protocol_") {
++		if (parsedMessageType == "ignore" || strings.HasPrefix(parsedMessageType, "unknown_protocol_")) && !evt.IsEdit {
+ 			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Message ignored because it's a unknown protocol message", mycli.userID)
+ 			return
+ 		}
+ 
+-		if parsedMessageType == "edit" || secretEditEnvelope {
++		if parsedMessageType == "edit" {
+ 			evt.IsEdit = true
+ 		}
+ 
+@@ -1310,28 +1286,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 			dataMap = make(map[string]interface{})
+ 		}
+ 
+-		// Explicit action flags for edit/revoke — protocolMessage.type alone is a
+-		// numeric enum (0 = REVOKE, 14 = MESSAGE_EDIT) and Info.Edit is opaque.
+-		switch parsedMessageType {
+-		case "edit":
+-			dataMap["IsEdit"] = true
+-			dataMap["messageType"] = "edit"
+-			setProtocolMessageTypeName(dataMap, "MESSAGE_EDIT")
+-		case "revoke":
+-			dataMap["IsRevoke"] = true
+-			dataMap["messageType"] = "revoke"
+-			setProtocolMessageTypeName(dataMap, "REVOKE")
+-		default:
+-			// Decrypt failed or plaintext not yet classified as "edit", but envelope
+-			// already identified the event as an incoming message edit.
+-			if secretEditEnvelope {
+-				dataMap["IsEdit"] = true
+-				dataMap["messageType"] = "edit"
+-			}
+-		}
+-		if decryptFailed {
+-			dataMap["decryptFailed"] = true
+-		}
++		annotateMessageAction(dataMap, evt, decryptFailed)
+ 
+ 		referral := extractReferralFromMessage(evt.Message)
+ 
+@@ -1661,7 +1616,9 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 		}
+ 
+ 		isGroup := strings.HasSuffix(evt.Info.Chat.String(), "@g.us")
+-		if isGroup {
++		// Forward a failed edit without querying optional group metadata from an
++		// unavailable session or delaying its encrypted fallback with network I/O.
++		if isGroup && !decryptFailed && mycli.WAClient != nil && mycli.WAClient.Store != nil {
+ 			groupData, err := mycli.WAClient.GetGroupInfo(context.Background(), evt.Info.Chat)
+ 			if err == nil {
+ 				dataMap["groupData"] = groupData
+@@ -2948,22 +2905,6 @@ func (w *whatsmeowService) ConfirmPasskey(instanceId string) error {
+ 	return nil
+ }
+ 
+-// setProtocolMessageTypeName adds a human-readable protocolMessage.typeName
+-// (e.g. REVOKE, MESSAGE_EDIT) without replacing the numeric type enum.
+-func setProtocolMessageTypeName(dataMap map[string]interface{}, typeName string) {
+-	message, ok := dataMap["Message"].(map[string]interface{})
+-	if !ok {
+-		return
+-	}
+-	pm, ok := message["protocolMessage"].(map[string]interface{})
+-	if !ok {
+-		return
+-	}
+-	pm["typeName"] = typeName
+-	message["protocolMessage"] = pm
+-	dataMap["Message"] = message
+-}
+-
+ // cleanSenderID remove a parte ":numero" do sender ID para exibir apenas o remoteJid correto
+ // Exemplo: "557499879409:3@s.whatsapp.net" -> "557499879409@s.whatsapp.net"
+ func cleanSenderID(senderID string) string {

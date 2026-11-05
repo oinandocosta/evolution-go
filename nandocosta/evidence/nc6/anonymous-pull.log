@@ -1,0 +1,4 @@
+docker.io/nandocosta/evolution-go@sha256:17689c858288a334407f3003e5b46a2f106fb854ce76ad0873d343dce2b7e3ea: Pulling from nandocosta/evolution-go
+Digest: sha256:17689c858288a334407f3003e5b46a2f106fb854ce76ad0873d343dce2b7e3ea
+Status: Image is up to date for nandocosta/evolution-go@sha256:17689c858288a334407f3003e5b46a2f106fb854ce76ad0873d343dce2b7e3ea
+docker.io/nandocosta/evolution-go:0.7.2-nc.6@sha256:17689c858288a334407f3003e5b46a2f106fb854ce76ad0873d343dce2b7e3ea

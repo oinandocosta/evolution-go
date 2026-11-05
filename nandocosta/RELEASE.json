@@ -1,0 +1,88 @@
+{
+  "version": "0.7.2-nc.6",
+  "image": "nandocosta/evolution-go:0.7.2-nc.6",
+  "visibility": "public",
+  "upstream": "https://github.com/evolution-foundation/evolution-go",
+  "base_commit": "9337afc47e10b86cc896a6f432240e40fee95dd1",
+  "handshake_sources": [
+    227,
+    229,
+    230
+  ],
+  "applied_prs": {
+    "220": "7674f11d0083774f37b502c96789b1359bac9d40",
+    "221": "bb9115ec65bd0836fd2be3d499b0e8303185e0e3",
+    "224": "6bef71833226b661f2844b9bd018ba05093b49e1",
+    "234": "a519ec5e9cdfcfc615fbdf2a3c65992521416a8c",
+    "149": "4fae329a32f5fdc36614b394c9426abcaa988c3f",
+    "187": "b572068140107399eadf98853eb4a29ae13c37ec",
+    "195": "16c4be6e9a0ae8a0bbc41f8b2790a362a7a4e2e2",
+    "212": "ae69dac8108f378fa269cb30e15f482e83198134",
+    "218": "86b4145b336ec8f426846a2e46b2870623282e2f",
+    "135": "c88a00df519f36e6e4e1f31553006eb7d064243f",
+    "136": "069e60b92d07d7de8bc363cfe5aa602f296893b2",
+    "137": "57e93d70321920edaa4f7df862ba20cd70f54c5c",
+    "207": "72ee1b317048bb3566f4ee60f89604d6e20e66aa",
+    "122": "cefe7fed0a0f002d5484a403062041ddba9c6207"
+  },
+  "whatsmeow_commit": "54038813c47f3f351eb6fcaafab0e1b99d676850",
+  "local_fixes": [
+    "Synchronized QR rotation with pairing completion and connection generation cleanup",
+    "QR expiration stops the unpaired socket without revoking WhatsApp credentials",
+    "Raw QR credentials and full pairing instance records are omitted from console logs",
+    "Keep the legacy blocklist DHash/JIDs response while using the new LID-aware WhatsMeow API",
+    "Adapt profile About text to SetStatusInput without adding emoji or a custom duration",
+    "Rotate ADV secrets on the current QR worker without logout, generation replacement or QR count exhaustion",
+    "Distinguish missing profile pictures (404) and WhatsApp-denied queries (403) from real query failures (500) with stable public codes",
+    "Record sanitized avatar failure categories and numeric IQ status without phones, URLs, tokens or raw upstream errors"
+  ],
+  "paired_account_validation": "pending",
+  "production_deployed": false,
+  "previous_release": "0.7.2-nc.5",
+  "partial_prs": {
+    "237": {
+      "commit": "5802932eec45e216433555daf801679224b13b32",
+      "included": [
+        "Authenticated and current generation checks immediately before sending",
+        "Remove tokens, pairing links, media URLs and webhook response bodies from selected logs"
+      ],
+      "excluded": [
+        "Dependency/schema upgrade",
+        "Replacement lifecycle architecture",
+        "Automatic logout or session removal"
+      ]
+    },
+    "120": {
+      "commit": "302ae6b9de22e2af780dca452c6827a81d6daa7e",
+      "included": [
+        "One eight-second HTTP query budget across startup, readiness, LID lookup and profile IQ",
+        "Canonical non-AD JIDs and instance-owned LID to PN lookup when known",
+        "Null and invalid input validation, cancellation, authentication, rate and timeout statuses",
+        "Unchanged lowercase profile metadata response and safe public error messages"
+      ],
+      "adaptation": "Use existing synchronized nc.3 runtime and lifecycle; no parallel client index",
+      "excluded": [
+        "PR 121 PictureURL extension to user info",
+        "Dependency or authentication schema upgrades"
+      ]
+    }
+  },
+  "dependency_upgrade": {
+    "module": "go.mau.fi/whatsmeow",
+    "from": "v0.0.0-20260720135917-a2381054887e",
+    "to": "v0.0.0-20261102152715-54038813c47f",
+    "go_minimum": "1.26.0",
+    "auth_schema_from": 14,
+    "auth_schema_to": 16,
+    "source": "https://github.com/tulir/whatsmeow/compare/a2381054887e16d22428430fdc4d2b027a7f29a7...54038813c47f3f351eb6fcaafab0e1b99d676850"
+  },
+  "avatar_error_contract": {
+    "403": "PROFILE_PICTURE_UNAUTHORIZED",
+    "404": "PROFILE_PICTURE_NOT_SET",
+    "500": "AVATAR_QUERY_FAILED",
+    "success": "unchanged data.url",
+    "php_consumer": "accept only the matching 403/404 codes as no available picture; retain real errors"
+  },
+  "authentication_schema": 16,
+  "schema_migration_in_this_release": false
+}

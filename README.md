@@ -1,3 +1,23 @@
+## Distribuição independente nandocosta
+
+Este fork reúne correções da comunidade e adaptações próprias sobre a [Evolution GO original](https://github.com/evolution-foundation/evolution-go), preservando atribuição, avisos legais e ativação. Não é uma versão oficial da Evolution Foundation.
+
+A imagem publicada é **`nandocosta/evolution-go:0.7.2-nc.6`**, também disponível em **`latest`**, para **Linux AMD64**. ARM64 está em homologação: os testes funcionais locais passaram por emulação, mas a aprovação do detector de corridas em ARM nativo e a publicação dessa variante continuam pendentes.
+
+- [Imagem e tags no Docker Hub](https://hub.docker.com/r/nandocosta/evolution-go/tags).
+- [Notas da distribuição e atualização da imagem](nandocosta/README.md).
+- [Todas as alterações, PRs de origem, testes e limites](nandocosta/TRANSPARENCIA.md).
+- [Preparação e validação ARM64](nandocosta/ARM64.md).
+- [Como incorporar futuras atualizações oficiais](nandocosta/TRANSPARENCIA.md#como-incorporar-futuras-atualizações-oficiais).
+
+Atualizar uma tag no Docker Hub não altera containers em execução. Ao aplicar uma nova imagem, preserve as configurações, bancos, volumes e credenciais existentes e confira a retomada das sessões. Os comandos e links abaixo pertencem à documentação original; para o estado e as diferenças deste fork, consulte os documentos acima.
+
+## Documentação original da Evolution Foundation
+
+O conteúdo original abaixo foi preservado integralmente como referência e atribuição.
+
+---
+
 <p align="center">
   <a href="https://evolutionfoundation.com.br">
     <img src="./public/hover-evolution.png" alt="Evolution Foundation" />

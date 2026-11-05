@@ -1,0 +1,15 @@
+{
+  "repository": "nandocosta/evolution-go",
+  "is_private": false,
+  "tag": "0.7.2-nc.3",
+  "digest": "sha256:5bc9b1d6dd55d018b07623495a1e3c9bad938bd649f5559caf676d726dcea2e2",
+  "last_updated": "2026-11-04T21:16:20.050154Z",
+  "images": [
+    {
+      "architecture": "amd64",
+      "os": "linux",
+      "digest": "sha256:5bc9b1d6dd55d018b07623495a1e3c9bad938bd649f5559caf676d726dcea2e2",
+      "size": 90562747
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+diff --git a/pkg/utils/utils.go b/pkg/utils/utils.go
+index 0e786c0..63d837b 100644
+--- a/pkg/utils/utils.go
++++ b/pkg/utils/utils.go
+@@ -207,6 +207,13 @@ func ParseJID(arg string) (whatsmeow_types.JID, bool) {
+ 		return recipient, false
+ 	}
+ 
++	// CreateJID keeps the "+" prefix for IsOnWhatsApp, but it is not part of a
++	// user JID. WhatsApp does not answer queries addressed to "+<number>", so
++	// they hang until the IQ timeout.
++	if recipient.Server == whatsmeow_types.DefaultUserServer {
++		recipient.User = strings.TrimPrefix(recipient.User, "+")
++	}
++
+ 	if recipient.User == "" && !strings.Contains(jidString, "@broadcast") {
+ 		logger.LogError("Invalid JID. No user specified: %s", jidString)
+ 		return recipient, false
+diff --git a/pkg/utils/utils_test.go b/pkg/utils/utils_test.go
+index 6144514..6803be3 100644
+--- a/pkg/utils/utils_test.go
++++ b/pkg/utils/utils_test.go
+@@ -284,13 +284,31 @@ func TestParseJID(t *testing.T) {
+ 			name:      "Valid phone number",
+ 			input:     "15551234567",
+ 			expectOk:  true,
+-			expectJID: "+15551234567@s.whatsapp.net",
++			expectJID: "15551234567@s.whatsapp.net",
+ 		},
+ 		{
+ 			name:      "Valid BR number",
+ 			input:     "5531987654321",
+ 			expectOk:  true,
+-			expectJID: "+553187654321@s.whatsapp.net",
++			expectJID: "553187654321@s.whatsapp.net",
++		},
++		{
++			name:      "Number with plus prefix",
++			input:     "+15551234567",
++			expectOk:  true,
++			expectJID: "15551234567@s.whatsapp.net",
++		},
++		{
++			name:      "Full JID with plus prefix",
++			input:     "+15551234567@s.whatsapp.net",
++			expectOk:  true,
++			expectJID: "15551234567@s.whatsapp.net",
++		},
++		{
++			name:      "LID",
++			input:     "123456789012345@lid",
++			expectOk:  true,
++			expectJID: "123456789012345@lid",
+ 		},
+ 		{
+ 			name:      "Valid group ID",

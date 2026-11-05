@@ -1,0 +1,490 @@
+{
+  "source_sha256": "252ad3f89bd1d02bbe16573417e144509cacac20244197eec2df9199022a2c53",
+  "file_count": 121,
+  "files": [
+    {
+      "path": ".dockerignore",
+      "sha256": "bdc08f6272d6c3cf5094a34632ca1524ed0f779ae31d652cc8cca1f2832ee86f"
+    },
+    {
+      "path": "Dockerfile",
+      "sha256": "003217c1fe812ac7f90452695c298467d7ac94a56eb70b6850fd7749c14018eb"
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "15a3dfa6488b433dbe750aedc0a986a94287ef4117839cadcac6dc5628abb98e"
+    },
+    {
+      "path": "NOTICE",
+      "sha256": "62e3456012b752455351ecdb859ee257894015d17cda3184f5d7bb748cbf1a35"
+    },
+    {
+      "path": "TRADEMARKS.md",
+      "sha256": "dcf9e86cb4a526317bbb3b9152de7ee562ceffba9bf42914b639180a84da3944"
+    },
+    {
+      "path": "VERSION",
+      "sha256": "edb878de9ea4f508aa79486d9680a35824165a327af74c536a369567df3dc082"
+    },
+    {
+      "path": "cmd/evolution-go/main.go",
+      "sha256": "2622b5c26b031302d6ec60048bc62b49eb151063d95cd8e22f68a39b405d6f96"
+    },
+    {
+      "path": "docs/docs.go",
+      "sha256": "97a88b17421c0386307422b7ac0692f4375455983820b1dcfb4b4b30bf0c3d4c"
+    },
+    {
+      "path": "docs/swagger.json",
+      "sha256": "aca17c7c814da29b277a15d97328233c6df4e07790f6e7822dd1444ab8ab8de1"
+    },
+    {
+      "path": "docs/swagger.yaml",
+      "sha256": "da2eaa3199ac0afe047c573207160e51460ef0feb5756bb8e741eb0eebca7b94"
+    },
+    {
+      "path": "docs/wiki/README.md",
+      "sha256": "514df79132c304a8e04fa05800f2f9986d00acc4dd1cb9e1bbc41e9431fc5721"
+    },
+    {
+      "path": "docs/wiki/conceitos-core/architecture.md",
+      "sha256": "b6b849e71d6b426b667b913dc026db0d3cbd717189993705f7e9e05aa67ab005"
+    },
+    {
+      "path": "docs/wiki/conceitos-core/authentication.md",
+      "sha256": "ae2be5a364ad4f64f8025ef8b5db303fcc9f7b713be2b9a3f4a6e00b37540ad8"
+    },
+    {
+      "path": "docs/wiki/conceitos-core/database.md",
+      "sha256": "04f2c14642d70f52e8d6318a9597cb8b63054a342dbddd36139fb8b666ced309"
+    },
+    {
+      "path": "docs/wiki/conceitos-core/instances.md",
+      "sha256": "b10d567a49be546dbfd5ef97cbb044f2c7e993dc2d17c35badf854ad9ce57820"
+    },
+    {
+      "path": "docs/wiki/deploy-producao/docker-deployment.md",
+      "sha256": "349e16102a94ad8a1f951c8e31ae96a9d9144d3c22b94fdaaf96751c9128f77b"
+    },
+    {
+      "path": "docs/wiki/deploy-producao/security.md",
+      "sha256": "fe4f5c6dd626518d90ac93380ba6a61dc90b2260f4b43e2a9b8c9796ac9089fb"
+    },
+    {
+      "path": "docs/wiki/desenvolvimento/contributing.md",
+      "sha256": "d58755ebc807c5e4fc9e42dc342e235d97283d781ee26b98b5d474e469cbe1e6"
+    },
+    {
+      "path": "docs/wiki/desenvolvimento/debugging.md",
+      "sha256": "4b0af54880ed194dae0ed10c3ee0ae4fb9e44d2548edc69ff6a571f62992d684"
+    },
+    {
+      "path": "docs/wiki/desenvolvimento/development-guide.md",
+      "sha256": "5c331ae865b4659503872542dffcabf3d321fb4d7bc1c387d37b194a62a6c42a"
+    },
+    {
+      "path": "docs/wiki/fundamentos/configuration.md",
+      "sha256": "5d40454e0176b075104f10a68030ff0b62a84332a8e3f333cf80e2d50a610804"
+    },
+    {
+      "path": "docs/wiki/fundamentos/installation.md",
+      "sha256": "4de14e52d01baa339ce5097881ca914684ad7d010c62dd53f0048f67990cf8f6"
+    },
+    {
+      "path": "docs/wiki/fundamentos/introduction.md",
+      "sha256": "c88a25692bf73c6383f8970b45b93e691cb9ed3bf3b2f5dbc39d5169ca44c3ea"
+    },
+    {
+      "path": "docs/wiki/fundamentos/quickstart.md",
+      "sha256": "060fca2b96397e4a34492b9d7b59ed8a3e828a3bbd8e62f2a91d6e8538ee7849"
+    },
+    {
+      "path": "docs/wiki/guias-api/api-call.md",
+      "sha256": "d2a7f0e66777f77d145c48167bf9fa33aa0a62df23cfbf49e29d5c0f5b13a0f0"
+    },
+    {
+      "path": "docs/wiki/guias-api/api-chats.md",
+      "sha256": "33d52ff9c7611fae7f695b33dfcec1dd0bc13080c12656464d0f46f6df4302b9"
+    },
+    {
+      "path": "docs/wiki/guias-api/api-community.md",
+      "sha256": "1a9ccac6557c61966dc38f175febb0537a7c6193a74d018ed5ea531cd50c8c26"
+    },
+    {
+      "path": "docs/wiki/guias-api/api-groups.md",
+      "sha256": "b9987cf106d74a13439bf70cee88f900e0859382f59e11bb01f7b252239a8448"
+    },
+    {
+      "path": "docs/wiki/guias-api/api-instances.md",
+      "sha256": "d78fa96da75d83f7eba4086321f4c56b541448784b57187bc4d13e8d8aedbc87"
+    },
+    {
+      "path": "docs/wiki/guias-api/api-interactive.md",
+      "sha256": "a62dc28efa4b1e6b03a8ceabb18c57fb15266debe6d323ac5f72f92cde3630de"
+    },
+    {
+      "path": "docs/wiki/guias-api/api-labels.md",
+      "sha256": "dacfd8dbe81d019a2f276af90618383266c30bc372bef48238f7fde8207c94fd"
+    },
+    {
+      "path": "docs/wiki/guias-api/api-messages.md",
+      "sha256": "eff7b9dd8ad593595fca9828c68e3e01e7cef715074a980aab533c2fc909a7eb"
+    },
+    {
+      "path": "docs/wiki/guias-api/api-newsletter.md",
+      "sha256": "3a443f1ac62c871b57a7981f7185b9a18dfaa59e930cdae73992d4bbd19f1f19"
+    },
+    {
+      "path": "docs/wiki/guias-api/api-overview.md",
+      "sha256": "7bba6933e9d5866c984dcd6d7c9f54f031454445b77ea5e6f41d1179bd6924c2"
+    },
+    {
+      "path": "docs/wiki/guias-api/api-user.md",
+      "sha256": "9d99449cfa2817018dc6a321bff00ceeaf18137de2821923e8798808b46ca683"
+    },
+    {
+      "path": "docs/wiki/guias-api/passkey-pairing.md",
+      "sha256": "bb3e98703fe3c8c131679a4d31393eb6ee9f3b4becbd5bf968a0e7eaa1fc18ba"
+    },
+    {
+      "path": "docs/wiki/recursos-avancados/events-system.md",
+      "sha256": "769e74b215b0d8f4d8a923a5493881351fd3c9e3a109d84bfd30367d376bd150"
+    },
+    {
+      "path": "docs/wiki/recursos-avancados/media-storage.md",
+      "sha256": "75d1d38b8e7bf68bcffa8cc43728de9a3461620b8ffdda84463edd821d133d41"
+    },
+    {
+      "path": "docs/wiki/recursos-avancados/multi-device.md",
+      "sha256": "bc2ae38542c79b6071f130ba9eb4b2323b1486d64e2138e2ea7426c2218eabb7"
+    },
+    {
+      "path": "docs/wiki/recursos-avancados/qrcode-connection.md",
+      "sha256": "44a2f771b7726c8ce6618bf1d2e75faeb05766a51c50167dcc17722f8f030e30"
+    },
+    {
+      "path": "docs/wiki/referencia/api-reference.md",
+      "sha256": "626f5da5ee0a79eb614d738b8cadcb1784f71b00c4a003dc708f972b3f5c0bc8"
+    },
+    {
+      "path": "docs/wiki/referencia/environment-variables.md",
+      "sha256": "e180f1ceb5ba0be0933691b77baf591124030148d98d590aa17dc0a7fc83c47c"
+    },
+    {
+      "path": "docs/wiki/referencia/error-codes.md",
+      "sha256": "8f937f721651790195ea858deda7ecebd2eebc1d15034106f32814f2f5ff3806"
+    },
+    {
+      "path": "docs/wiki/referencia/faq.md",
+      "sha256": "a89fda5de35a131a2720a0b9fef9aeae2365e040c62c255290cf03cc92801daa"
+    },
+    {
+      "path": "go.mod",
+      "sha256": "b7097f46e8c11396d99a24592a6e8195815a615da62d9027c65c9d8bf81631cf"
+    },
+    {
+      "path": "go.sum",
+      "sha256": "91a7110343695e1ed9f9b20e1bc04065220112fa7d92121c2265c30232e9e0a9"
+    },
+    {
+      "path": "manager/dist/assets/index-B6NZfWVh.css",
+      "sha256": "10e530f4d71cd5df19a040fdf8579a54ed0d00116fa70957f3ef22b82df6d627"
+    },
+    {
+      "path": "manager/dist/assets/index-B7iM18f_.js",
+      "sha256": "bc15774de6647271c185d4979efdc8fd442d520b64dfbaa38310d7a54848a82a"
+    },
+    {
+      "path": "manager/dist/index.html",
+      "sha256": "bbab50618260c5f49775e2264b61daf2b8f6dba5d8c540d58ffa525d8b93830a"
+    },
+    {
+      "path": "nandocosta/RELEASE.json",
+      "sha256": "13659829481900eb86b0ccccec6df134e07384baca1d918d2ef17d3f74fd733c"
+    },
+    {
+      "path": "pkg/call/handler/call_handler.go",
+      "sha256": "fc5f0b4d389d092ae92fab09dab13ad0a28c5c0c255b47013dbb6926a3844992"
+    },
+    {
+      "path": "pkg/call/service/call_service.go",
+      "sha256": "add1750f3f217e71c7786b4f9de8c731d43c15f4997fed1a01cee6cbac79dd57"
+    },
+    {
+      "path": "pkg/chat/handler/chat_handler.go",
+      "sha256": "3d20a3ef4a0107ef4b452ca10f9a29c8f562de0e571323e6a7241dc269ffac84"
+    },
+    {
+      "path": "pkg/chat/service/chat_service.go",
+      "sha256": "f71e91edc074037938f4208f278f5786041d5b2257969c1b8b40910c90ce1df0"
+    },
+    {
+      "path": "pkg/chat/service/history_sync_test.go",
+      "sha256": "0f98a4215e304fe6fc47eea5f1e45089b36362bf820f33b37a087fec8247bcfd"
+    },
+    {
+      "path": "pkg/community/handler/community_handler.go",
+      "sha256": "d8a28df1e0f2b117ad7fe5c034bde0a7dc2b06be97bf52fe39a546defe578b6c"
+    },
+    {
+      "path": "pkg/community/service/community_service.go",
+      "sha256": "8326de09bec71bcb7bf67d7c1e4b7fca43bdf3e78f07634c1ca28c32449ad036"
+    },
+    {
+      "path": "pkg/config/config.go",
+      "sha256": "1c2197647f1dfb9e5e782572c6070f9ac425ae90a63321a1010c2fa705afc11c"
+    },
+    {
+      "path": "pkg/config/env/env.go",
+      "sha256": "aac040e83ac07a670c2df9ee215319bea1d7cf51312b79ad7a0491ad050af3de"
+    },
+    {
+      "path": "pkg/core/c0.go",
+      "sha256": "a08ccc7b53bd59115a88290824951685dd98e67d8d4bfee53f76d42ba25bfec4"
+    },
+    {
+      "path": "pkg/events/interfaces/producer.go",
+      "sha256": "f4d9c3392c64d2f6add330e54037ee290c43c031a3370fe441397f2a80fc9837"
+    },
+    {
+      "path": "pkg/events/nats/nats_producer.go",
+      "sha256": "ba6ea499347f1e598e78bf806e40abe6b510d7e9fa2c5ced86a3e274e8454214"
+    },
+    {
+      "path": "pkg/events/rabbitmq/rabbitmq_producer.go",
+      "sha256": "8c5394aec4f621c70b3c9fd48cc25dc2322c7584335fca5528c93d79d0751ede"
+    },
+    {
+      "path": "pkg/events/webhook/webhook_producer.go",
+      "sha256": "bbb59a7afe7126a7ac560d70ec422a4e95e263adb67ebc43d94a62ada6877b48"
+    },
+    {
+      "path": "pkg/events/websocket/websocket_producer.go",
+      "sha256": "cee19fa460783abf9c6042c8df2c7e079512a40c13539951cf4b037b4dc9504b"
+    },
+    {
+      "path": "pkg/group/handler/group_handler.go",
+      "sha256": "fe1ff7d7de51901b65a2fc5d4533c9780a66dd6f1510e64e11546e71d3809303"
+    },
+    {
+      "path": "pkg/group/service/group_service.go",
+      "sha256": "602462fdb9682994201b64d1d426bd3a9a8078305779f832923a628fc925368c"
+    },
+    {
+      "path": "pkg/instance/handler/instance_handler.go",
+      "sha256": "9f593ba906bea6ba44609ca0f733bc44c579815433b1cbf133ab92ed881419fb"
+    },
+    {
+      "path": "pkg/instance/model/instance_model.go",
+      "sha256": "1d73c2c0b68028bd39b9e9464f51eed60a4cf01052f15afdb74c78abb23f7ddd"
+    },
+    {
+      "path": "pkg/instance/repository/instance_repository.go",
+      "sha256": "9cf20dc03c21378b95ac3c58c1bfa2d74c39a1bea52fe889f9f5e3e61ee823ab"
+    },
+    {
+      "path": "pkg/instance/service/instance_service.go",
+      "sha256": "1ccd62941cb13a4f3e16ddc97e251f3b8ec8b0d57782a38131f9b4a69cf57630"
+    },
+    {
+      "path": "pkg/instance/service/session_operations.go",
+      "sha256": "e0744165d02204f89d27be43591bc423a53c0635caebc4f3bfbc891af348d884"
+    },
+    {
+      "path": "pkg/instance/service/session_operations_test.go",
+      "sha256": "4ad8353b0afbce7bc3c41cf135abd3507ce932b9f12a0579829429ba724845d4"
+    },
+    {
+      "path": "pkg/internal/event_types/event_types.go",
+      "sha256": "1f81cf45b698b79f58ec63d6600f765a90231494157c975b55bb7acfddd8222f"
+    },
+    {
+      "path": "pkg/label/handler/label_handler.go",
+      "sha256": "36b4745cb67350187ec6c2b360b4be43e2a2401e4844ec283d3d97d8b5f20dc9"
+    },
+    {
+      "path": "pkg/label/model/label_model.go",
+      "sha256": "214ecbcd5a00aa3802e163b84b28688b350433926e2cf26e84ad8c604e56caaf"
+    },
+    {
+      "path": "pkg/label/repository/label_repository.go",
+      "sha256": "8eba0ca2433cb51fb5392ea4f2dc6b9b1ce2efc24f03a4575bde4dc24b8924b0"
+    },
+    {
+      "path": "pkg/label/service/label_service.go",
+      "sha256": "8bf2912e68999cf12e6ee09f7a0075c9f8aded984c16996dce39d14bd226d8ed"
+    },
+    {
+      "path": "pkg/logger/logger.go",
+      "sha256": "1d43425dc55ad96cf7c25460dd03f4a6f305813a33242b0bfb1902c29394c412"
+    },
+    {
+      "path": "pkg/message/handler/message_handler.go",
+      "sha256": "c7eda0b8b09aa4dacf5d8229386fcc7b04db9ddf033778cb081d25b665c0cb8d"
+    },
+    {
+      "path": "pkg/message/model/message_model.go",
+      "sha256": "c1c33909000f029c0d173343b7dd81431a86f8e810381fc4e45a6cb127af844d"
+    },
+    {
+      "path": "pkg/message/repository/message_repository.go",
+      "sha256": "8f5cdee0fe18eea3f38dced5d9b2823946b461ff7e29934009216c81dc8ba84e"
+    },
+    {
+      "path": "pkg/message/repository/message_repository_test.go",
+      "sha256": "ba581f7bfbe3923d5bce6f5675c1f909dbfea890d2f1e4539801d87a63854caa"
+    },
+    {
+      "path": "pkg/message/service/message_service.go",
+      "sha256": "7348e659a80a7e3b6844b88f617d5eeeda8f953fb8f6cb650332c5a098c85c48"
+    },
+    {
+      "path": "pkg/middleware/auth_middleware.go",
+      "sha256": "5ca37e8eb77a96e24cbbfd62ad3e3f39fd421c878d3d0b1aa2030d1ad962a800"
+    },
+    {
+      "path": "pkg/middleware/jid_validation_middleware.go",
+      "sha256": "eac6991b8bda8db8fd161d4a3e61bba978e03a12f6694b61757243fe94adb3da"
+    },
+    {
+      "path": "pkg/newsletter/handler/newsletter_handler.go",
+      "sha256": "f5e8d5b5f2071d4e3e2650b12c8962ef84159bd8b14618f087b4ec28b9aa082e"
+    },
+    {
+      "path": "pkg/newsletter/service/newsletter_service.go",
+      "sha256": "054ba2275e005e0dfc9e2de51e438e6974a40c55dc7aaed2537b6e8f45a843c2"
+    },
+    {
+      "path": "pkg/passkey/ceremony/store.go",
+      "sha256": "ab0dc773fd6b55896eaccd5f3e6f9c5e162a8bc51cc1f7c9278a5a4ff2bbbc62"
+    },
+    {
+      "path": "pkg/passkey/handler/passkey_handler.go",
+      "sha256": "9cc4b287e42e067fadf7ac4edb51c32fa38ebb13c1c6e8d079b83d77e29d466c"
+    },
+    {
+      "path": "pkg/poll/handler/poll_handler.go",
+      "sha256": "dbdf64522111a9898a422e2eb43e07f5ae159322cb45fd9035fa900cdb3b0cb5"
+    },
+    {
+      "path": "pkg/poll/model/poll_vote.go",
+      "sha256": "8980c03a07014b6eb67c572d8c5bc542eac0b7af89a277ff037993a32c3d39f5"
+    },
+    {
+      "path": "pkg/poll/service/poll_service.go",
+      "sha256": "1b5df27149da72b00c40d692e0d3a315c831cca3404bd29fbc32e72b424b8cc3"
+    },
+    {
+      "path": "pkg/routes/routes.go",
+      "sha256": "8d7a6633c5a4391666520a295f41c5f42dbf3e77b3af1595cbc6a5ab167bf2fd"
+    },
+    {
+      "path": "pkg/runtimestate/map.go",
+      "sha256": "2b4b932e8f9fae49ad16fd935099333a4d89b655e184e252e03c64534f6fbe49"
+    },
+    {
+      "path": "pkg/runtimestate/map_test.go",
+      "sha256": "c636e456058ecd69908d3274eb0e8db1991ce8daf7232e4faeeaacdcebc3d4f6"
+    },
+    {
+      "path": "pkg/runtimestate/stop_signal.go",
+      "sha256": "29993b6cc6460ea56ce3785dc3c0c21664ea83de82c92fe1ae69e6bf6c977002"
+    },
+    {
+      "path": "pkg/runtimestate/stop_signal_test.go",
+      "sha256": "67696d22b90e97a247b7168529d7c67cf642ffaccbfc90fa7b91f612a818dc94"
+    },
+    {
+      "path": "pkg/sendMessage/handler/send_handler.go",
+      "sha256": "561fd46c68f81f505d7f87dba49edbf67161459bc13377c9f3db51654e0491b4"
+    },
+    {
+      "path": "pkg/sendMessage/service/dimensions_test.go",
+      "sha256": "ae20ba01233aecda0f9699ac85b9a0c53e47e5569e271bf9ab1b009767b682d7"
+    },
+    {
+      "path": "pkg/sendMessage/service/send_service.go",
+      "sha256": "d807b0da26c9b3e48df84f7687d50a3f63085ab4187a4ad671a9e1a603db6801"
+    },
+    {
+      "path": "pkg/sendMessage/service/thumbnail_test.go",
+      "sha256": "803a73e310632157b9028274b27d2bb42983aa0856be3ed4fd405c59628dde77"
+    },
+    {
+      "path": "pkg/server/handler/server_handler.go",
+      "sha256": "50a3ba5d3eee761dcc60e52661d062ad7d8e6d3252be57f12e04053618316b65"
+    },
+    {
+      "path": "pkg/storage/interfaces/media_storage.go",
+      "sha256": "0d730128a4a23dd6fd485342454a4e6ba74015619bdaf6d0c8d885187e9f6a13"
+    },
+    {
+      "path": "pkg/storage/minio/media_storage.go",
+      "sha256": "9fe5c830f767413f3ac81d56104a03d3d7d16dd46e9cb17e0f3af33ed8b5e4e4"
+    },
+    {
+      "path": "pkg/telemetry/telemetry.go",
+      "sha256": "4c1be0117648f00c3b77127b5330a169e1ae0c4a6ef3572a5bb17604509d935b"
+    },
+    {
+      "path": "pkg/user/handler/user_handler.go",
+      "sha256": "b3d4fb6b81e898973976c778668529abe9bd5296ddca66d429c741d0a94d3cf8"
+    },
+    {
+      "path": "pkg/user/service/user_service.go",
+      "sha256": "3122f6f28d80a8f200ef38ea047a7ce6540a832ed49690ae489b2c73eac192a3"
+    },
+    {
+      "path": "pkg/utils/utils.go",
+      "sha256": "559f162993121c1a6b18c00b6215be1e54aa26dc884fbd6dd58db33d441f8e6e"
+    },
+    {
+      "path": "pkg/utils/utils_test.go",
+      "sha256": "9d6e04d0a68e8cbdb5d0d3867c79145c5d8542a80a13e0dbc4703d2425eb1f2c"
+    },
+    {
+      "path": "pkg/whatsmeow/service/archive_event_test.go",
+      "sha256": "f4c60901b44271bacbd3e9e457d5db921ff5334fa8a99d98d98402bc323aac43"
+    },
+    {
+      "path": "pkg/whatsmeow/service/auth_store_test.go",
+      "sha256": "1eb23cb2725ddd484e093718e5fd58bad87f68f1a557153a85d83e67c331cda8"
+    },
+    {
+      "path": "pkg/whatsmeow/service/handshake_fetch_test.go",
+      "sha256": "507d4f1b565006bdc2220419427de334206fc1b270d8a2152cd0c4dee3092f65"
+    },
+    {
+      "path": "pkg/whatsmeow/service/handshake_version.go",
+      "sha256": "61e0632ab6dd3dad74d75316f0a9adf0ae3c49ba1577e01fb7dad0f543ae5b64"
+    },
+    {
+      "path": "pkg/whatsmeow/service/handshake_version_test.go",
+      "sha256": "8968aa526e80baa1473ef4ba9f46393eef8803807b0d378810d898dd6681a839"
+    },
+    {
+      "path": "pkg/whatsmeow/service/lifecycle_test.go",
+      "sha256": "ff4f05b4ce05456d7b31494315f8ed1a0a77fda857a9d3241b6ba7e3cfd5780d"
+    },
+    {
+      "path": "pkg/whatsmeow/service/qr_lifecycle.go",
+      "sha256": "a9654a345e6dd2cc14a641353f69f8b48b69ad053f095188c0f217c03216c258"
+    },
+    {
+      "path": "pkg/whatsmeow/service/qr_lifecycle_test.go",
+      "sha256": "8d5933accf6c5d123b8f4d39e66905dbad7d1251bcd4f3edeaf827aee42f2a0a"
+    },
+    {
+      "path": "pkg/whatsmeow/service/referral.go",
+      "sha256": "df35100fdee38bed1fdaaa82b0d0a101529e402e1a47e3b1016dc26cb35b614c"
+    },
+    {
+      "path": "pkg/whatsmeow/service/referral_test.go",
+      "sha256": "bd2a53aaa5559ca26c107e44d288fa8dfc149bc8b0aba01afaf93a614d550bc6"
+    },
+    {
+      "path": "pkg/whatsmeow/service/whatsmeow.go",
+      "sha256": "7bee2e6e084c59b56b8b120806185b604b49e9902232ecf7e9d97f1241710cff"
+    }
+  ]
+}

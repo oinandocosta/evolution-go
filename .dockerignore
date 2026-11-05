@@ -31,9 +31,16 @@ docker/
 *.sh
 Makefile
 
-# Test files
-*_test.go
+# Compiled test files (source tests run in the verification build stage)
 *.test
+
+# Local secrets and machine-specific data
+.env
+.env.*
+!.env.example
+dbdata/
+nandocosta/evidence/
+*.tar
 
 # Manager/dist é necessário - serve arquivos estáticos do frontend React
 # Não excluir - precisa estar na imagem final para ser acessado via /manager

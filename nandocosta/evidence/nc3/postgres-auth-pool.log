@@ -1,0 +1,5 @@
+=== RUN   TestAuthStorePostgres
+    auth_store_test.go:100: 64 concurrent client starts reused the bounded caller-owned PostgreSQL auth pool
+--- PASS: TestAuthStorePostgres (0.12s)
+PASS
+ok  	github.com/evolution-foundation/evolution-go/pkg/whatsmeow/service	1.163s

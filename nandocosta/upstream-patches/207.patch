@@ -1,0 +1,807 @@
+From 7c4d50f6d348a42d0bfdf0ea240e9d36d9134d95 Mon Sep 17 00:00:00 2001
+From: Gustavo Cateim <cateim@gmail.com>
+Date: Sat, 26 Sep 2026 11:08:30 -0300
+Subject: [PATCH 1/2] feat(send): upload a high-quality thumbnail for link
+ previews
+
+- added the high-quality link thumbnail upload so whatsapp renders the large preview card instead of the small one
+- used the url, title, description and imgUrl sent by the caller, fetching the page only for missing fields
+- fetched the page with a link-preview user agent, a 10s timeout and a size limit, rejecting non-2xx responses
+- kept the send going when the preview fails, with a smaller card or none
+- changed the preview type from video to none and read og:title and relative og:image urls
+
+Closes #103
+---
+ pkg/sendMessage/service/link_preview.go      | 261 +++++++++++++++++++
+ pkg/sendMessage/service/link_preview_test.go | 229 ++++++++++++++++
+ pkg/sendMessage/service/send_service.go      |  68 ++---
+ 3 files changed, 512 insertions(+), 46 deletions(-)
+ create mode 100644 pkg/sendMessage/service/link_preview.go
+ create mode 100644 pkg/sendMessage/service/link_preview_test.go
+
+diff --git a/pkg/sendMessage/service/link_preview.go b/pkg/sendMessage/service/link_preview.go
+new file mode 100644
+index 000000000..e482f2c3c
+--- /dev/null
++++ b/pkg/sendMessage/service/link_preview.go
+@@ -0,0 +1,261 @@
++package send_service
++
++import (
++	"bytes"
++	"context"
++	"fmt"
++	"image"
++	"image/jpeg"
++	"io"
++	"net/http"
++	neturl "net/url"
++	"strings"
++	"time"
++
++	"github.com/chai2010/webp"
++	"go.mau.fi/whatsmeow"
++	"go.mau.fi/whatsmeow/proto/waE2E"
++	"golang.org/x/image/draw"
++	"google.golang.org/protobuf/proto"
++)
++
++// linkPreviewUserAgent identifies preview requests as a link-preview crawler.
++// Several storefronts only serve Open Graph tags to preview crawlers and answer
++// Go's default client with a bot wall or an HTTP 403 (seen on Mercado Livre
++// short links, Amazon and Shopee), which left the card without an image or
++// titled after the error page.
++const linkPreviewUserAgent = "WhatsApp/2.24.20.80 A"
++
++const (
++	// linkPreviewMaxSide caps the longest side of the high-quality thumbnail.
++	linkPreviewMaxSide = 1200
++	// linkPreviewInlineWidth is the width of the JPEGThumbnail embedded in the
++	// message itself, shown while the high-quality thumbnail loads.
++	linkPreviewInlineWidth   = 72
++	linkPreviewMaxHTMLBytes  = 4 << 20
++	linkPreviewMaxImageBytes = 8 << 20
++	linkPreviewUploadTimeout = 30 * time.Second
++)
++
++// linkPreviewHTTPClient bounds every preview request: a slow or unresponsive
++// site must not hang the send.
++var linkPreviewHTTPClient = &http.Client{Timeout: 10 * time.Second}
++
++// linkPreviewData is the metadata rendered in the preview card.
++type linkPreviewData struct {
++	Title       string
++	Description string
++	ImageURL    string
++}
++
++// preparedLinkImage holds the preview image in the two sizes WhatsApp uses.
++type preparedLinkImage struct {
++	HighQuality []byte
++	Inline      []byte
++	Width       int
++	Height      int
++}
++
++// linkPreviewTarget returns the URL the card points to: the explicit `url`
++// field when given, otherwise the first URL found in the text.
++func linkPreviewTarget(data *LinkStruct) string {
++	if data.Url != "" {
++		return data.Url
++	}
++	return findURL(data.Text)
++}
++
++// resolveLinkPreview starts from the metadata supplied by the caller and only
++// fetches the page when the title or the image is missing. Caller values always
++// win, so API users can build the card from data they already have and skip a
++// page that refuses bots.
++func resolveLinkPreview(data *LinkStruct, target string, fetch func(string) (string, string, string, error)) (linkPreviewData, error) {
++	preview := linkPreviewData{Title: data.Title, Description: data.Description, ImageURL: data.ImgUrl}
++	if target == "" || (preview.Title != "" && preview.ImageURL != "") {
++		return preview, nil
++	}
++
++	title, description, imageURL, err := fetch(target)
++	if err != nil {
++		return preview, err
++	}
++	if preview.Title == "" {
++		preview.Title = title
++	}
++	if preview.Description == "" {
++		preview.Description = description
++	}
++	if preview.ImageURL == "" {
++		preview.ImageURL = imageURL
++	}
++	return preview, nil
++}
++
++// absoluteURL resolves ref against base. It returns ref unchanged when either
++// side cannot be parsed, and an empty string when ref is empty.
++func absoluteURL(base, ref string) string {
++	if ref == "" {
++		return ""
++	}
++	baseURL, err := neturl.Parse(base)
++	if err != nil {
++		return ref
++	}
++	resolved, err := baseURL.Parse(ref)
++	if err != nil {
++		return ref
++	}
++	return resolved.String()
++}
++
++// fetchLinkPreviewResource performs a bounded GET with the preview user agent,
++// rejecting non-2xx responses and bodies larger than maxBytes.
++func fetchLinkPreviewResource(url string, maxBytes int64) ([]byte, error) {
++	req, err := http.NewRequest(http.MethodGet, url, nil)
++	if err != nil {
++		return nil, err
++	}
++	req.Header.Set("User-Agent", linkPreviewUserAgent)
++
++	resp, err := linkPreviewHTTPClient.Do(req)
++	if err != nil {
++		return nil, err
++	}
++	defer func() { _ = resp.Body.Close() }()
++
++	if resp.StatusCode < 200 || resp.StatusCode > 299 {
++		return nil, fmt.Errorf("link preview: %s returned HTTP %d", url, resp.StatusCode)
++	}
++	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
++	if err != nil {
++		return nil, err
++	}
++	if int64(len(body)) > maxBytes {
++		return nil, fmt.Errorf("link preview: %s is larger than %d bytes", url, maxBytes)
++	}
++	return body, nil
++}
++
++// prepareLinkPreviewImage decodes the preview image and encodes it as JPEG in
++// the two sizes WhatsApp uses: the high-quality thumbnail (longest side capped
++// at linkPreviewMaxSide) and the small inline JPEGThumbnail.
++func prepareLinkPreviewImage(raw []byte) (preparedLinkImage, error) {
++	img, err := decodeLinkPreviewImage(raw)
++	if err != nil {
++		return preparedLinkImage{}, err
++	}
++
++	scaled := scaleToMaxSide(img, linkPreviewMaxSide)
++	var highQuality bytes.Buffer
++	if err := jpeg.Encode(&highQuality, scaled, &jpeg.Options{Quality: 85}); err != nil {
++		return preparedLinkImage{}, fmt.Errorf("link preview: encoding the thumbnail: %w", err)
++	}
++
++	bounds := scaled.Bounds()
++	return preparedLinkImage{
++		HighQuality: highQuality.Bytes(),
++		Inline:      makeJPEGThumbnail(highQuality.Bytes(), linkPreviewInlineWidth),
++		Width:       bounds.Dx(),
++		Height:      bounds.Dy(),
++	}, nil
++}
++
++// decodeLinkPreviewImage accepts any format registered in the image package
++// plus WebP, which storefront CDNs commonly serve for og:image.
++func decodeLinkPreviewImage(raw []byte) (image.Image, error) {
++	img, _, err := image.Decode(bytes.NewReader(raw))
++	if err == nil {
++		return img, nil
++	}
++	if webpImg, webpErr := webp.Decode(bytes.NewReader(raw)); webpErr == nil {
++		return webpImg, nil
++	}
++	return nil, fmt.Errorf("link preview: the image could not be decoded: %w", err)
++}
++
++// scaleToMaxSide shrinks img so its longest side is at most maxSide, keeping
++// the aspect ratio. Smaller images are returned unchanged.
++func scaleToMaxSide(img image.Image, maxSide int) image.Image {
++	bounds := img.Bounds()
++	width, height := bounds.Dx(), bounds.Dy()
++	longest := max(width, height)
++	if longest <= maxSide {
++		return img
++	}
++
++	scaledWidth := max(1, width*maxSide/longest)
++	scaledHeight := max(1, height*maxSide/longest)
++	dst := image.NewRGBA(image.Rect(0, 0, scaledWidth, scaledHeight))
++	draw.ApproxBiLinear.Scale(dst, dst.Bounds(), img, bounds, draw.Src, nil)
++	return dst
++}
++
++// applyLinkThumbnailUpload fills the high-quality thumbnail fields from the
++// upload result. Without them WhatsApp only has the inline JPEGThumbnail and
++// renders the small, low-resolution card.
++func applyLinkThumbnailUpload(ext *waE2E.ExtendedTextMessage, uploaded whatsmeow.UploadResponse, width, height int) {
++	ext.ThumbnailDirectPath = proto.String(uploaded.DirectPath)
++	ext.ThumbnailSHA256 = uploaded.FileSHA256
++	ext.ThumbnailEncSHA256 = uploaded.FileEncSHA256
++	ext.MediaKey = uploaded.MediaKey
++	ext.MediaKeyTimestamp = proto.Int64(time.Now().Unix())
++	ext.ThumbnailWidth = proto.Uint32(uint32(width))
++	ext.ThumbnailHeight = proto.Uint32(uint32(height))
++}
++
++// buildLinkMessage assembles the ExtendedTextMessage with its preview card.
++// Preview problems never block the send: the text still goes out, with a
++// smaller card or none at all, and the reason is logged.
++func (s *sendService) buildLinkMessage(client *whatsmeow.Client, data *LinkStruct, instanceID string) *waE2E.Message {
++	ext := &waE2E.ExtendedTextMessage{Text: proto.String(data.Text)}
++	target := linkPreviewTarget(data)
++	if target == "" {
++		return &waE2E.Message{ExtendedTextMessage: ext}
++	}
++
++	preview, err := resolveLinkPreview(data, target, fetchLinkMetadata)
++	if err != nil {
++		s.loggerWrapper.GetLogger(instanceID).LogWarn("[%s] SendLink: could not read the preview metadata of %s: %v", instanceID, target, err)
++	}
++	ext.MatchedText = proto.String(target)
++	ext.Title = proto.String(preview.Title)
++	ext.Description = proto.String(preview.Description)
++	ext.PreviewType = waE2E.ExtendedTextMessage_NONE.Enum()
++
++	if preview.ImageURL != "" {
++		newsletter := strings.Contains(data.Number, "@newsletter")
++		s.attachLinkThumbnail(client, ext, preview.ImageURL, newsletter, instanceID)
++	}
++	return &waE2E.Message{ExtendedTextMessage: ext}
++}
++
++// attachLinkThumbnail downloads the preview image, embeds the inline thumbnail
++// and uploads the high-quality one. Channels (newsletters) take unencrypted
++// uploads that this path does not handle, so they keep the inline thumbnail.
++func (s *sendService) attachLinkThumbnail(client *whatsmeow.Client, ext *waE2E.ExtendedTextMessage, imageURL string, newsletter bool, instanceID string) {
++	log := s.loggerWrapper.GetLogger(instanceID)
++	raw, err := fetchLinkPreviewResource(imageURL, linkPreviewMaxImageBytes)
++	if err != nil {
++		log.LogWarn("[%s] SendLink: preview image unavailable: %v", instanceID, err)
++		return
++	}
++	prepared, err := prepareLinkPreviewImage(raw)
++	if err != nil {
++		log.LogWarn("[%s] SendLink: preview image rejected: %v", instanceID, err)
++		return
++	}
++
++	ext.JPEGThumbnail = prepared.Inline
++	if newsletter {
++		return
++	}
++
++	ctx, cancel := context.WithTimeout(context.Background(), linkPreviewUploadTimeout)
++	defer cancel()
++	uploaded, err := client.Upload(ctx, prepared.HighQuality, whatsmeow.MediaLinkThumbnail)
++	if err != nil {
++		log.LogWarn("[%s] SendLink: high-quality thumbnail upload failed, sending the inline thumbnail only: %v", instanceID, err)
++		return
++	}
++	applyLinkThumbnailUpload(ext, uploaded, prepared.Width, prepared.Height)
++}
+diff --git a/pkg/sendMessage/service/link_preview_test.go b/pkg/sendMessage/service/link_preview_test.go
+new file mode 100644
+index 000000000..54365c3f1
+--- /dev/null
++++ b/pkg/sendMessage/service/link_preview_test.go
+@@ -0,0 +1,229 @@
++package send_service
++
++import (
++	"bytes"
++	"errors"
++	"image"
++	"net/http"
++	"net/http/httptest"
++	"testing"
++
++	"go.mau.fi/whatsmeow"
++	"go.mau.fi/whatsmeow/proto/waE2E"
++)
++
++func TestLinkPreviewTarget_PrefersExplicitURL(t *testing.T) {
++	data := &LinkStruct{Text: "see https://first.example/a and https://second.example/b", Url: "https://second.example/b"}
++	if got := linkPreviewTarget(data); got != "https://second.example/b" {
++		t.Fatalf("expected the explicit url, got %q", got)
++	}
++}
++
++func TestLinkPreviewTarget_FallsBackToFirstURLInText(t *testing.T) {
++	data := &LinkStruct{Text: "see https://first.example/a and https://second.example/b"}
++	if got := linkPreviewTarget(data); got != "https://first.example/a" {
++		t.Fatalf("expected the first url of the text, got %q", got)
++	}
++}
++
++func TestResolveLinkPreview_CallerValuesSkipTheFetch(t *testing.T) {
++	data := &LinkStruct{Title: "Caller title", ImgUrl: "https://cdn.example/photo.jpg"}
++	fetch := func(string) (string, string, string, error) {
++		t.Fatal("the page must not be fetched when title and image were supplied")
++		return "", "", "", nil
++	}
++
++	preview, err := resolveLinkPreview(data, "https://shop.example/p/1", fetch)
++	if err != nil {
++		t.Fatalf("unexpected error: %v", err)
++	}
++	if preview.Title != "Caller title" || preview.ImageURL != "https://cdn.example/photo.jpg" {
++		t.Fatalf("caller values were not kept: %+v", preview)
++	}
++}
++
++func TestResolveLinkPreview_FillsOnlyMissingFields(t *testing.T) {
++	data := &LinkStruct{Title: "Caller title"}
++	calls := 0
++	fetch := func(url string) (string, string, string, error) {
++		calls++
++		return "Page title", "Page description", "https://cdn.example/og.jpg", nil
++	}
++
++	preview, err := resolveLinkPreview(data, "https://shop.example/p/1", fetch)
++	if err != nil {
++		t.Fatalf("unexpected error: %v", err)
++	}
++	if calls != 1 {
++		t.Fatalf("expected one fetch, got %d", calls)
++	}
++	if preview.Title != "Caller title" {
++		t.Fatalf("caller title must win, got %q", preview.Title)
++	}
++	if preview.Description != "Page description" || preview.ImageURL != "https://cdn.example/og.jpg" {
++		t.Fatalf("missing fields were not filled from the page: %+v", preview)
++	}
++}
++
++func TestResolveLinkPreview_FetchErrorKeepsCallerValues(t *testing.T) {
++	data := &LinkStruct{Description: "Caller description"}
++	fetch := func(string) (string, string, string, error) {
++		return "", "", "", errors.New("403 Forbidden")
++	}
++
++	preview, err := resolveLinkPreview(data, "https://shop.example/p/1", fetch)
++	if err == nil {
++		t.Fatal("expected the fetch error to be reported")
++	}
++	if preview.Description != "Caller description" {
++		t.Fatalf("caller values must survive a failed fetch, got %+v", preview)
++	}
++}
++
++func TestFetchLinkMetadata_SendsPreviewUserAgentAndReadsOpenGraph(t *testing.T) {
++	var gotUserAgent string
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		gotUserAgent = r.Header.Get("User-Agent")
++		w.Header().Set("Content-Type", "text/html; charset=utf-8")
++		_, _ = w.Write([]byte(`<html><head><title>Generic page title</title>
++<meta property="og:title" content="Kit 6 Boxers Microfiber">
++<meta property="og:description" content="Deal of the day">
++<meta property="og:image" content="https://cdn.example/boxers.jpg">
++</head><body></body></html>`))
++	}))
++	defer server.Close()
++
++	title, description, imageURL, err := fetchLinkMetadata(server.URL)
++	if err != nil {
++		t.Fatalf("unexpected error: %v", err)
++	}
++	if gotUserAgent != linkPreviewUserAgent {
++		t.Fatalf("expected the link-preview user agent, got %q", gotUserAgent)
++	}
++	if title != "Kit 6 Boxers Microfiber" {
++		t.Fatalf("og:title must win over <title>, got %q", title)
++	}
++	if description != "Deal of the day" || imageURL != "https://cdn.example/boxers.jpg" {
++		t.Fatalf("unexpected metadata: %q %q", description, imageURL)
++	}
++}
++
++// A bot wall answers 403 with its own <title>; that title must never become the preview card.
++func TestFetchLinkMetadata_RejectsNonSuccessStatus(t *testing.T) {
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.WriteHeader(http.StatusForbidden)
++		_, _ = w.Write([]byte(`<html><head><title>Access denied</title></head></html>`))
++	}))
++	defer server.Close()
++
++	if _, _, _, err := fetchLinkMetadata(server.URL); err == nil {
++		t.Fatal("expected an error for a non-2xx response")
++	}
++}
++
++func TestFetchLinkMetadata_ResolvesRelativeImageURL(t *testing.T) {
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		_, _ = w.Write([]byte(`<html><head><meta property="og:image" content="/img/product.jpg"></head></html>`))
++	}))
++	defer server.Close()
++
++	_, _, imageURL, err := fetchLinkMetadata(server.URL + "/p/1")
++	if err != nil {
++		t.Fatalf("unexpected error: %v", err)
++	}
++	if imageURL != server.URL+"/img/product.jpg" {
++		t.Fatalf("expected an absolute image url, got %q", imageURL)
++	}
++}
++
++func TestFetchLinkPreviewResource_RejectsOversizedBody(t *testing.T) {
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		_, _ = w.Write(bytes.Repeat([]byte("x"), 2048))
++	}))
++	defer server.Close()
++
++	if _, err := fetchLinkPreviewResource(server.URL, 1024); err == nil {
++		t.Fatal("expected an error for a body above the limit")
++	}
++}
++
++func TestFetchLinkPreviewResource_RejectsNonSuccessStatus(t *testing.T) {
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.WriteHeader(http.StatusNotFound)
++	}))
++	defer server.Close()
++
++	if _, err := fetchLinkPreviewResource(server.URL, 1024); err == nil {
++		t.Fatal("expected an error for a non-2xx response")
++	}
++}
++
++func TestPrepareLinkPreviewImage_KeepsSizeAndEncodesJPEG(t *testing.T) {
++	prepared, err := prepareLinkPreviewImage(encodePNG(t, 800, 400))
++	if err != nil {
++		t.Fatalf("unexpected error: %v", err)
++	}
++	assertJPEG(t, prepared.HighQuality, 800, 400)
++	if prepared.Width != 800 || prepared.Height != 400 {
++		t.Fatalf("expected 800x400, got %dx%d", prepared.Width, prepared.Height)
++	}
++	assertJPEG(t, prepared.Inline, 72, 36)
++}
++
++func TestPrepareLinkPreviewImage_DownscalesLargeImages(t *testing.T) {
++	prepared, err := prepareLinkPreviewImage(encodePNG(t, 3000, 1500))
++	if err != nil {
++		t.Fatalf("unexpected error: %v", err)
++	}
++	assertJPEG(t, prepared.HighQuality, linkPreviewMaxSide, linkPreviewMaxSide/2)
++	if prepared.Width != linkPreviewMaxSide || prepared.Height != linkPreviewMaxSide/2 {
++		t.Fatalf("expected %dx%d, got %dx%d", linkPreviewMaxSide, linkPreviewMaxSide/2, prepared.Width, prepared.Height)
++	}
++}
++
++func TestPrepareLinkPreviewImage_RejectsNonImage(t *testing.T) {
++	if _, err := prepareLinkPreviewImage([]byte("<html>captcha</html>")); err == nil {
++		t.Fatal("expected an error for bytes that are not an image")
++	}
++}
++
++func TestApplyLinkThumbnailUpload_SetsHighQualityFields(t *testing.T) {
++	ext := &waE2E.ExtendedTextMessage{}
++	uploaded := whatsmeow.UploadResponse{
++		DirectPath:    "/v/t62.36244-24/thumb",
++		MediaKey:      []byte("media-key"),
++		FileSHA256:    []byte("sha256"),
++		FileEncSHA256: []byte("enc-sha256"),
++	}
++
++	applyLinkThumbnailUpload(ext, uploaded, 1200, 630)
++
++	if ext.GetThumbnailDirectPath() != "/v/t62.36244-24/thumb" {
++		t.Fatalf("direct path not set: %q", ext.GetThumbnailDirectPath())
++	}
++	if string(ext.GetMediaKey()) != "media-key" || string(ext.GetThumbnailSHA256()) != "sha256" ||
++		string(ext.GetThumbnailEncSHA256()) != "enc-sha256" {
++		t.Fatal("upload hashes or media key not copied")
++	}
++	if ext.GetThumbnailWidth() != 1200 || ext.GetThumbnailHeight() != 630 {
++		t.Fatalf("dimensions not set: %dx%d", ext.GetThumbnailWidth(), ext.GetThumbnailHeight())
++	}
++	if ext.GetMediaKeyTimestamp() == 0 {
++		t.Fatal("media key timestamp not set")
++	}
++}
++
++// assertJPEG decodes data as JPEG and checks its dimensions.
++func assertJPEG(t *testing.T, data []byte, wantWidth, wantHeight int) {
++	t.Helper()
++	cfg, format, err := image.DecodeConfig(bytes.NewReader(data))
++	if err != nil {
++		t.Fatalf("not a decodable image: %v", err)
++	}
++	if format != "jpeg" {
++		t.Fatalf("expected jpeg, got %q", format)
++	}
++	if cfg.Width != wantWidth || cfg.Height != wantHeight {
++		t.Fatalf("expected %dx%d, got %dx%d", wantWidth, wantHeight, cfg.Width, cfg.Height)
++	}
++}
+diff --git a/pkg/sendMessage/service/send_service.go b/pkg/sendMessage/service/send_service.go
+index b88500893..3ad6c6c0a 100644
+--- a/pkg/sendMessage/service/send_service.go
++++ b/pkg/sendMessage/service/send_service.go
+@@ -655,19 +655,21 @@ func (s *sendService) sendTextWithRetry(data *TextStruct, instance *instance_mod
+ 	return nil, fmt.Errorf("failed to send text after %d attempts", maxRetries)
+ }
+ 
+-func fetchLinkMetadata(url string) (string, string, string, error) {
+-	resp, err := http.Get(url)
++// fetchLinkMetadata reads the preview metadata of a page: og:title (falling
++// back to <title>), the description and og:image. The image URL is resolved
++// against the page URL, since some sites declare it as a relative path.
++func fetchLinkMetadata(pageURL string) (string, string, string, error) {
++	body, err := fetchLinkPreviewResource(pageURL, linkPreviewMaxHTMLBytes)
+ 	if err != nil {
+ 		return "", "", "", err
+ 	}
+-	defer resp.Body.Close()
+ 
+-	doc, err := html.Parse(resp.Body)
++	doc, err := html.Parse(bytes.NewReader(body))
+ 	if err != nil {
+ 		return "", "", "", err
+ 	}
+ 
+-	var title, description, imgURL string
++	var title, ogTitle, description, imgURL string
+ 
+ 	var f func(*html.Node)
+ 	f = func(n *html.Node) {
+@@ -686,6 +688,10 @@ func fetchLinkMetadata(url string) (string, string, string, error) {
+ 					}
+ 				}
+ 
++				if property == "og:title" && content != "" {
++					ogTitle = content
++				}
++
+ 				if (property == "description" || property == "og:description") && content != "" {
+ 					description = content
+ 				}
+@@ -703,7 +709,10 @@ func fetchLinkMetadata(url string) (string, string, string, error) {
+ 
+ 	f(doc)
+ 
+-	return title, description, imgURL, nil
++	if ogTitle != "" {
++		title = ogTitle
++	}
++	return title, description, absoluteURL(pageURL, imgURL), nil
+ }
+ 
+ func (s *sendService) SendLink(data *LinkStruct, instance *instance_model.Instance) (*MessageSendStruct, error) {
+@@ -711,10 +720,14 @@ func (s *sendService) SendLink(data *LinkStruct, instance *instance_model.Instan
+ }
+ 
+ func (s *sendService) sendLinkWithRetry(data *LinkStruct, instance *instance_model.Instance, maxRetries int) (*MessageSendStruct, error) {
++	// The preview (metadata, image download, thumbnail upload) is built once
++	// and reused by the retries below.
++	var msg *waE2E.Message
++
+ 	for attempt := 1; attempt <= maxRetries; attempt++ {
+ 		s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] SendLink attempt %d/%d", instance.Id, attempt, maxRetries)
+ 
+-		_, err := s.ensureClientConnectedWithRetry(instance.Id, 2)
++		client, err := s.ensureClientConnectedWithRetry(instance.Id, 2)
+ 		if err != nil {
+ 			if attempt == maxRetries {
+ 				return nil, err
+@@ -722,45 +735,8 @@ func (s *sendService) sendLinkWithRetry(data *LinkStruct, instance *instance_mod
+ 			continue
+ 		}
+ 
+-		matchedText := findURL(data.Text)
+-
+-		if matchedText != "" {
+-			title, description, imgUrl, err := fetchLinkMetadata(matchedText)
+-			if err != nil {
+-				if attempt == maxRetries {
+-					return nil, err
+-				}
+-				continue
+-			}
+-
+-			data.Title = title
+-			data.Description = description
+-			data.ImgUrl = imgUrl
+-		}
+-
+-		var fileData []byte
+-		if data.ImgUrl != "" {
+-			resp, err := http.Get(data.ImgUrl)
+-			if err != nil {
+-				if attempt == maxRetries {
+-					return nil, err
+-				}
+-				continue
+-			}
+-			defer resp.Body.Close()
+-			fileData, _ = io.ReadAll(resp.Body)
+-		}
+-
+-		previewType := waE2E.ExtendedTextMessage_VIDEO
+-		msg := &waE2E.Message{
+-			ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+-				Text:          &data.Text,
+-				Title:         &data.Title,
+-				MatchedText:   &matchedText,
+-				JPEGThumbnail: fileData,
+-				Description:   &data.Description,
+-				PreviewType:   &previewType,
+-			},
++		if msg == nil {
++			msg = s.buildLinkMessage(client, data, instance.Id)
+ 		}
+ 
+ 		message, err := s.SendMessage(instance, msg, "ExtendedTextMessage", &SendDataStruct{
+
+From 72ee1b317048bb3566f4ee60f89604d6e20e66aa Mon Sep 17 00:00:00 2001
+From: Gustavo Cateim <cateim@gmail.com>
+Date: Sat, 26 Sep 2026 12:03:21 -0300
+Subject: [PATCH 2/2] fix(send): reject oversized link preview images before
+ decoding
+
+- added a header-only dimension check that rejects preview images above 25 megapixels, so a small file declaring a huge bitmap can no longer exhaust memory
+- simplified decoding to image.Decode, since the webp decoder registers itself in the image package
+- added tests for the dimension guard and for webp input
+---
+ pkg/sendMessage/service/link_preview.go      | 31 +++++++-----
+ pkg/sendMessage/service/link_preview_test.go | 53 ++++++++++++++++++++
+ 2 files changed, 72 insertions(+), 12 deletions(-)
+
+diff --git a/pkg/sendMessage/service/link_preview.go b/pkg/sendMessage/service/link_preview.go
+index e482f2c3c..9d29b3756 100644
+--- a/pkg/sendMessage/service/link_preview.go
++++ b/pkg/sendMessage/service/link_preview.go
+@@ -12,7 +12,6 @@ import (
+ 	"strings"
+ 	"time"
+ 
+-	"github.com/chai2010/webp"
+ 	"go.mau.fi/whatsmeow"
+ 	"go.mau.fi/whatsmeow/proto/waE2E"
+ 	"golang.org/x/image/draw"
+@@ -35,6 +34,10 @@ const (
+ 	linkPreviewMaxHTMLBytes  = 4 << 20
+ 	linkPreviewMaxImageBytes = 8 << 20
+ 	linkPreviewUploadTimeout = 30 * time.Second
++	// linkPreviewMaxPixels bounds the decoded bitmap (4 bytes per pixel, about
++	// 100 MB at the limit). The byte limit alone does not: a few kilobytes of
++	// compressed image can declare a bitmap of several gigabytes.
++	linkPreviewMaxPixels = 25_000_000
+ )
+ 
+ // linkPreviewHTTPClient bounds every preview request: a slow or unresponsive
+@@ -140,10 +143,13 @@ func fetchLinkPreviewResource(url string, maxBytes int64) ([]byte, error) {
+ // the two sizes WhatsApp uses: the high-quality thumbnail (longest side capped
+ // at linkPreviewMaxSide) and the small inline JPEGThumbnail.
+ func prepareLinkPreviewImage(raw []byte) (preparedLinkImage, error) {
+-	img, err := decodeLinkPreviewImage(raw)
+-	if err != nil {
++	if err := checkLinkPreviewDimensions(raw); err != nil {
+ 		return preparedLinkImage{}, err
+ 	}
++	img, _, err := image.Decode(bytes.NewReader(raw))
++	if err != nil {
++		return preparedLinkImage{}, fmt.Errorf("link preview: the image could not be decoded: %w", err)
++	}
+ 
+ 	scaled := scaleToMaxSide(img, linkPreviewMaxSide)
+ 	var highQuality bytes.Buffer
+@@ -160,17 +166,18 @@ func prepareLinkPreviewImage(raw []byte) (preparedLinkImage, error) {
+ 	}, nil
+ }
+ 
+-// decodeLinkPreviewImage accepts any format registered in the image package
+-// plus WebP, which storefront CDNs commonly serve for og:image.
+-func decodeLinkPreviewImage(raw []byte) (image.Image, error) {
+-	img, _, err := image.Decode(bytes.NewReader(raw))
+-	if err == nil {
+-		return img, nil
++// checkLinkPreviewDimensions reads only the image header and rejects images
++// whose decoded bitmap would exceed linkPreviewMaxPixels. WebP is covered too:
++// the webp package imported by this service registers its decoder.
++func checkLinkPreviewDimensions(raw []byte) error {
++	cfg, _, err := image.DecodeConfig(bytes.NewReader(raw))
++	if err != nil {
++		return fmt.Errorf("link preview: the image could not be decoded: %w", err)
+ 	}
+-	if webpImg, webpErr := webp.Decode(bytes.NewReader(raw)); webpErr == nil {
+-		return webpImg, nil
++	if cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width*cfg.Height > linkPreviewMaxPixels {
++		return fmt.Errorf("link preview: a %dx%d image exceeds the %d pixel limit", cfg.Width, cfg.Height, linkPreviewMaxPixels)
+ 	}
+-	return nil, fmt.Errorf("link preview: the image could not be decoded: %w", err)
++	return nil
+ }
+ 
+ // scaleToMaxSide shrinks img so its longest side is at most maxSide, keeping
+diff --git a/pkg/sendMessage/service/link_preview_test.go b/pkg/sendMessage/service/link_preview_test.go
+index 54365c3f1..2e6cf6870 100644
+--- a/pkg/sendMessage/service/link_preview_test.go
++++ b/pkg/sendMessage/service/link_preview_test.go
+@@ -2,12 +2,16 @@ package send_service
+ 
+ import (
+ 	"bytes"
++	"encoding/binary"
+ 	"errors"
++	"hash/crc32"
+ 	"image"
+ 	"net/http"
+ 	"net/http/httptest"
++	"strings"
+ 	"testing"
+ 
++	"github.com/chai2010/webp"
+ 	"go.mau.fi/whatsmeow"
+ 	"go.mau.fi/whatsmeow/proto/waE2E"
+ )
+@@ -170,6 +174,25 @@ func TestPrepareLinkPreviewImage_KeepsSizeAndEncodesJPEG(t *testing.T) {
+ 	assertJPEG(t, prepared.Inline, 72, 36)
+ }
+ 
++// Storefront CDNs serve og:image as WebP; decoding relies on the webp decoder
++// that this package registers in the image package.
++func TestPrepareLinkPreviewImage_AcceptsWebP(t *testing.T) {
++	img, _, err := image.Decode(bytes.NewReader(encodePNG(t, 640, 320)))
++	if err != nil {
++		t.Fatalf("fixture: %v", err)
++	}
++	webpData, err := webp.EncodeRGBA(img, 80)
++	if err != nil {
++		t.Fatalf("fixture: %v", err)
++	}
++
++	prepared, err := prepareLinkPreviewImage(webpData)
++	if err != nil {
++		t.Fatalf("unexpected error: %v", err)
++	}
++	assertJPEG(t, prepared.HighQuality, 640, 320)
++}
++
+ func TestPrepareLinkPreviewImage_DownscalesLargeImages(t *testing.T) {
+ 	prepared, err := prepareLinkPreviewImage(encodePNG(t, 3000, 1500))
+ 	if err != nil {
+@@ -181,6 +204,36 @@ func TestPrepareLinkPreviewImage_DownscalesLargeImages(t *testing.T) {
+ 	}
+ }
+ 
++// pngDeclaring returns a PNG whose header claims width x height pixels while the
++// file itself stays tiny: the shape of a decompression bomb.
++func pngDeclaring(t *testing.T, width, height uint32) []byte {
++	t.Helper()
++	data := encodePNG(t, 1, 1)
++	binary.BigEndian.PutUint32(data[16:20], width)
++	binary.BigEndian.PutUint32(data[20:24], height)
++	binary.BigEndian.PutUint32(data[29:33], crc32.ChecksumIEEE(data[12:29]))
++	return data
++}
++
++func TestCheckLinkPreviewDimensions_RejectsDecompressionBomb(t *testing.T) {
++	err := checkLinkPreviewDimensions(pngDeclaring(t, 20000, 20000))
++	if err == nil || !strings.Contains(err.Error(), "20000x20000") {
++		t.Fatalf("expected the oversized image to be rejected before decoding, got %v", err)
++	}
++}
++
++func TestCheckLinkPreviewDimensions_AcceptsRegularPhoto(t *testing.T) {
++	if err := checkLinkPreviewDimensions(encodePNG(t, 800, 400)); err != nil {
++		t.Fatalf("expected a regular photo to pass, got %v", err)
++	}
++}
++
++func TestPrepareLinkPreviewImage_RejectsDecompressionBomb(t *testing.T) {
++	if _, err := prepareLinkPreviewImage(pngDeclaring(t, 20000, 20000)); err == nil {
++		t.Fatal("expected the oversized image to be rejected")
++	}
++}
++
+ func TestPrepareLinkPreviewImage_RejectsNonImage(t *testing.T) {
+ 	if _, err := prepareLinkPreviewImage([]byte("<html>captcha</html>")); err == nil {
+ 		t.Fatal("expected an error for bytes that are not an image")

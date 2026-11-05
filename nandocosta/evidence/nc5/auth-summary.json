@@ -1,0 +1,51 @@
+{
+  "run": "evogo-nc5-20261104",
+  "passed": true,
+  "clean_stages": 8,
+  "legacy_snapshot_sha256": [
+    "5e1c99d09de6e30edc95e4ce61b40df2c0510de94c735ab78cec13c547b190db"
+  ],
+  "new_fields_sha256": [
+    "2ae724aff0fbd8d4194c964de0f32132295021b756859bf1df8518fde076c7ab"
+  ],
+  "tables": 19,
+  "synthetic_devices": 3,
+  "rows_per_stage": 64.0,
+  "production_data": false,
+  "paired_account": false,
+  "source_sha256": [
+    {
+      "file": "fixtures.go",
+      "Hash": "9F6F5A67A9DC7779057DC2503144B5C3F1C3B62F4442C8C707C3CBDE43A42985"
+    },
+    {
+      "file": "main.go",
+      "Hash": "68E4181CF360ADD2F7F08B95BDAA5D6D1CA76E4D3033C098A398434E0A09FF1A"
+    },
+    {
+      "file": "verify.go",
+      "Hash": "0CED7E49F8627201C72181C725B0B0FE1FC77F3691EB85DB81104FEA0E9C3C01"
+    }
+  ],
+  "binary_sha256": [
+    {
+      "file": "nc4",
+      "Hash": "A2C108BD463E22E2791785EC2D2E362D1880412B76F72285B9ADBCBAEEE547E3"
+    },
+    {
+      "file": "nc5",
+      "Hash": "9DA83C84BCCC6C9DF7BC331E5E3CA021B2F91AACF3EC3436671AE285D577B54A"
+    }
+  ],
+  "diagnostic_path": "build/diagnostic/nc5-auth-initial",
+  "evidence": [
+    "auth-01-nc4-seed.json",
+    "auth-02-nc4-baseline.json",
+    "auth-03-nc5-upgrade.json",
+    "auth-04-nc5-new-fields.json",
+    "auth-05-nc4-read-schema16.json",
+    "auth-06-nc4-save-schema16.json",
+    "auth-07-nc5-after-return.json",
+    "auth-08-final-image-verify.json"
+  ]
+}

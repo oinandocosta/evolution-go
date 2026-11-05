@@ -1,0 +1,8 @@
+{
+  "number": 187,
+  "title": "fix(instance): do not clear event subscriptions on disconnect",
+  "body": "## Summary\n- `Disconnect` was wiping `instance.Events` before persisting the instance.\n- After `reconnect`/`connect`, the instance looked connected but `CallWebhook` built an empty subscription list (`strings.Split(\"\", \",\")` yields `[\"\"]`, which fails `IsEventType`), so every webhook was dropped.\n- Keep event subscriptions on disconnect and only mark the instance as disconnected via `UpdateConnected`.\n\n## Reproduction\n1. Instance connected with `events=MESSAGE,CONNECTION,...` and a webhook URL.\n2. `POST /instance/disconnect`\n3. `POST /instance/reconnect` (or connect again)\n4. Instance reports Connected/LoggedIn, but `events` is empty and inbound WhatsApp messages never reach the webhook.\n\n## Test plan\n- [ ] Disconnect an instance with non-empty `events`\n- [ ] Confirm `GET /instance/info/{id}` still shows the previous `events` string\n- [ ] Reconnect and send a test message → webhook delivers `Message`\n- [ ] Confirm `connected=false` / disconnect reason after disconnect\n\n\nMade with [Cursor](https://cursor.com)\n\n## Summary by Sourcery\n\nPreserve event subscriptions when disconnecting instances so reconnects continue to route webhook events correctly.\n\nBug Fixes:\n- Preserve instance event subscriptions across disconnects so webhooks continue delivering events after reconnecting.\n\nEnhancements:\n- Update only the instance connection state and disconnect reason when disconnecting.",
+  "updated_at": "2026-09-04T01:44:27Z",
+  "base": "develop",
+  "head": "b572068140107399eadf98853eb4a29ae13c37ec"
+}

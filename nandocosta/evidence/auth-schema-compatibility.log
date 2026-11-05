@@ -1,0 +1,2 @@
+BASELINE: schema=14 synthetic_session=preserved public_key_fingerprint=0e34f50c2bd0907eb877863a8a79f68e1b0664f55f2e9a23ed7f97977825774a
+CANDIDATE: schema=14 synthetic_session=preserved public_key_fingerprint=0e34f50c2bd0907eb877863a8a79f68e1b0664f55f2e9a23ed7f97977825774a

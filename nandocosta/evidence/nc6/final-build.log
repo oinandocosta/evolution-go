@@ -1,0 +1,92 @@
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 2.21kB done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/golang:1.26.10-alpine@sha256:a2012b4a1d1f9f7e9f44e0d39b805a901e856b1dd80b4e6ee4338db547050308
+#2 DONE 0.0s
+
+#3 [internal] load metadata for docker.io/library/alpine:3.23.7@sha256:ff7f0c727dd796aa36787bfcd9a64bf35a6ce72a73451b3359fde849b6703d63
+#3 ...
+
+#4 [auth] library/alpine:pull token for registry-1.docker.io
+#4 DONE 0.0s
+
+#3 [internal] load metadata for docker.io/library/alpine:3.23.7@sha256:ff7f0c727dd796aa36787bfcd9a64bf35a6ce72a73451b3359fde849b6703d63
+#3 DONE 0.9s
+
+#5 [internal] load .dockerignore
+#5 transferring context: 1.16kB done
+#5 DONE 0.0s
+
+#6 [dependencies 1/5] FROM docker.io/library/golang:1.26.10-alpine@sha256:a2012b4a1d1f9f7e9f44e0d39b805a901e856b1dd80b4e6ee4338db547050308
+#6 DONE 0.0s
+
+#7 [final  1/10] FROM docker.io/library/alpine:3.23.7@sha256:ff7f0c727dd796aa36787bfcd9a64bf35a6ce72a73451b3359fde849b6703d63
+#7 DONE 0.0s
+
+#8 [internal] load build context
+#8 transferring context: 12.95kB 0.0s done
+#8 DONE 0.0s
+
+#9 [dependencies 3/5] WORKDIR /build
+#9 CACHED
+
+#10 [verification 2/3] RUN go test ./... -count=1 && go vet ./...
+#10 CACHED
+
+#11 [dependencies 2/5] RUN apk add --no-cache git build-base libjpeg-turbo-dev libwebp-dev
+#11 CACHED
+
+#12 [dependencies 4/5] COPY go.mod go.sum ./
+#12 CACHED
+
+#13 [verification 1/3] COPY . .
+#13 CACHED
+
+#14 [dependencies 5/5] RUN go mod download
+#14 CACHED
+
+#15 [verification 3/3] RUN go test -race ./pkg/runtimestate ./pkg/events/websocket ./pkg/events/webhook ./pkg/instance/handler ./pkg/instance/repository ./pkg/whatsmeow/service ./pkg/instance/service ./pkg/chat/service ./pkg/sendMessage/service ./pkg/utils ./pkg/user/service ./pkg/user/handler -count=1
+#15 CACHED
+
+#16 [build 1/2] RUN CGO_ENABLED=1 go build -ldflags "-X main.version=0.7.2-nc.6" -o server ./cmd/evolution-go
+#16 DONE 3.9s
+
+#17 [build 2/2] RUN printf '%s\n' "0.7.2-nc.6" > VERSION
+#17 DONE 0.3s
+
+#18 [final  2/10] RUN apk add --no-cache tzdata ffmpeg libjpeg-turbo libwebp poppler-utils
+#18 CACHED
+
+#19 [final  3/10] WORKDIR /app
+#19 CACHED
+
+#20 [final  4/10] COPY --from=build /build/server .
+#20 DONE 0.1s
+
+#21 [final  5/10] COPY --from=build /build/manager/dist ./manager/dist
+#21 DONE 0.1s
+
+#22 [final  6/10] COPY --from=build /build/VERSION ./VERSION
+#22 DONE 0.1s
+
+#23 [final  7/10] COPY --from=build /build/LICENSE ./LICENSE
+#23 DONE 0.1s
+
+#24 [final  8/10] COPY --from=build /build/NOTICE ./NOTICE
+#24 DONE 0.1s
+
+#25 [final  9/10] COPY --from=build /build/TRADEMARKS.md ./TRADEMARKS.md
+#25 DONE 0.1s
+
+#26 [final 10/10] COPY --from=build /build/nandocosta/RELEASE.json ./nandocosta-release.json
+#26 DONE 0.1s
+
+#27 exporting to image
+#27 exporting layers
+#27 exporting layers 0.3s done
+#27 writing image sha256:bd5cfada446f582e62e79bc49cbc1b21f40b7b3d8b55d63679128b5ea426213e done
+#27 naming to docker.io/nandocosta/evolution-go:0.7.2-nc.6 done
+#27 DONE 0.4s

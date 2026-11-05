@@ -1,0 +1,4407 @@
+From 1fafa80279fc19a19f80d3635aea77a21b7d1c25 Mon Sep 17 00:00:00 2001
+From: jadercarvalhoPRM <jader.carvalho.ads@gmail.com>
+Date: Mon, 28 Sep 2026 16:50:26 -0300
+Subject: [PATCH 1/5] fix: reuse bounded WhatsApp auth store across reconnects
+
+---
+ .github/workflows/publish-auth-pool-ghcr.yml |  56 +++++++
+ pkg/whatsmeow/service/auth_store_test.go     | 161 +++++++++++++++++++
+ pkg/whatsmeow/service/whatsmeow.go           |  67 +++++---
+ 3 files changed, 265 insertions(+), 19 deletions(-)
+ create mode 100644 .github/workflows/publish-auth-pool-ghcr.yml
+ create mode 100644 pkg/whatsmeow/service/auth_store_test.go
+
+diff --git a/.github/workflows/publish-auth-pool-ghcr.yml b/.github/workflows/publish-auth-pool-ghcr.yml
+new file mode 100644
+index 000000000..e16a9d7cc
+--- /dev/null
++++ b/.github/workflows/publish-auth-pool-ghcr.yml
+@@ -0,0 +1,56 @@
++name: Verify and publish auth pool fix
++
++on:
++  push:
++    branches:
++      - codex/fix-auth-pool
++
++permissions:
++  contents: read
++
++jobs:
++  verify:
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++      - uses: actions/setup-go@v6
++        with:
++          go-version-file: go.mod
++          cache: true
++      - name: Install native build dependencies
++        run: sudo apt-get update && sudo apt-get install -y libjpeg-dev libwebp-dev
++      - name: Test all packages
++        run: go test ./...
++      - name: Check auth store concurrency
++        run: go test -race ./pkg/whatsmeow/service -run 'Test(AuthContainer|PostgresAuthContainer)' -count=1
++      - name: Build server
++        run: go build ./cmd/evolution-go
++
++  publish:
++    needs: verify
++    runs-on: ubuntu-latest
++    permissions:
++      contents: read
++      packages: write
++    steps:
++      - uses: actions/checkout@v4
++      - uses: docker/setup-buildx-action@v3
++      - uses: docker/login-action@v3
++        with:
++          registry: ghcr.io
++          username: ${{ github.actor }}
++          password: ${{ secrets.GITHUB_TOKEN }}
++      - name: Build and push commit-tagged image
++        id: build
++        uses: docker/build-push-action@v6
++        with:
++          context: .
++          file: ./Dockerfile
++          platforms: linux/amd64
++          push: true
++          tags: ghcr.io/jadercarvalhoprm/evolution-go-auth-pool:0.7.2-${{ github.sha }}
++          build-args: VERSION=0.7.2-authpool-${{ github.sha }}
++          cache-from: type=gha
++          cache-to: type=gha,mode=max
++      - name: Record image digest
++        run: echo 'ghcr.io/jadercarvalhoprm/evolution-go-auth-pool@${{ steps.build.outputs.digest }}'
+diff --git a/pkg/whatsmeow/service/auth_store_test.go b/pkg/whatsmeow/service/auth_store_test.go
+new file mode 100644
+index 000000000..cee6cbbe8
+--- /dev/null
++++ b/pkg/whatsmeow/service/auth_store_test.go
+@@ -0,0 +1,161 @@
++package whatsmeow_service
++
++import (
++	"errors"
++	"os"
++	"path/filepath"
++	"regexp"
++	"sync"
++	"testing"
++
++	sqlmock "github.com/DATA-DOG/go-sqlmock"
++	"go.mau.fi/whatsmeow/store/sqlstore"
++	"go.mau.fi/whatsmeow/store/sqlstore/upgrades"
++	_ "modernc.org/sqlite"
++
++	"github.com/evolution-foundation/evolution-go/pkg/config"
++)
++
++func expectCurrentPostgresAuthSchema(mock sqlmock.Sqlmock) {
++	columnExists := regexp.QuoteMeta("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name=$1 AND column_name=$2)")
++	mock.ExpectQuery(columnExists).WithArgs("whatsmeow_version", "compat").
++		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
++	version := len(upgrades.Table)
++	mock.ExpectQuery(regexp.QuoteMeta("SELECT version, compat FROM whatsmeow_version LIMIT 1")).
++		WillReturnRows(sqlmock.NewRows([]string{"version", "compat"}).AddRow(version, version))
++}
++
++func postgresAuthService(t *testing.T) (whatsmeowService, sqlmock.Sqlmock) {
++	t.Helper()
++	db, mock, err := sqlmock.New()
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { _ = db.Close() })
++	db.SetMaxOpenConns(25)
++	db.SetMaxIdleConns(5)
++	return whatsmeowService{
++		config:    &config.Config{PostgresAuthDB: "postgres://existing-pool"},
++		authDB:    db,
++		authStore: &authStoreState{},
++	}, mock
++}
++
++func TestPostgresAuthContainerReusesExistingBoundedPool(t *testing.T) {
++	w, mock := postgresAuthService(t)
++	expectCurrentPostgresAuthSchema(mock)
++	first, err := w.getAuthContainer()
++	if err != nil {
++		t.Fatal(err)
++	}
++	for i := 0; i < 10; i++ {
++		container, err := w.getAuthContainer()
++		if err != nil || container != first {
++			t.Fatalf("reconnect %d did not reuse the auth store: %v", i, err)
++		}
++	}
++	if got := w.authDB.Stats().MaxOpenConnections; got != 25 {
++		t.Fatalf("shared auth pool limit changed to %d", got)
++	}
++	if err := mock.ExpectationsWereMet(); err != nil {
++		t.Fatalf("auth schema was queried again during reconnect: %v", err)
++	}
++}
++
++func TestPostgresAuthContainerRetriesAfterTooManyClients(t *testing.T) {
++	w, mock := postgresAuthService(t)
++	columnExists := regexp.QuoteMeta("SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name=$1 AND column_name=$2)")
++	mock.ExpectQuery(columnExists).WithArgs("whatsmeow_version", "compat").
++		WillReturnError(errors.New("pq: sorry, too many clients already"))
++	if _, err := w.getAuthContainer(); err == nil || !regexp.MustCompile("too many clients already").MatchString(err.Error()) {
++		t.Fatalf("expected production connection error, got %v", err)
++	}
++	if err := w.authDB.Ping(); err != nil {
++		t.Fatalf("failed upgrade closed the process-owned authDB: %v", err)
++	}
++	expectCurrentPostgresAuthSchema(mock)
++	if _, err := w.getAuthContainer(); err != nil {
++		t.Fatalf("auth store did not recover after DB availability returned: %v", err)
++	}
++	if err := mock.ExpectationsWereMet(); err != nil {
++		t.Fatal(err)
++	}
++}
++
++func sqliteAuthService(t *testing.T) whatsmeowService {
++	t.Helper()
++	dir := t.TempDir()
++	if err := os.MkdirAll(filepath.Join(dir, "dbdata"), 0700); err != nil {
++		t.Fatal(err)
++	}
++	return whatsmeowService{
++		config:    &config.Config{},
++		exPath:    filepath.ToSlash(dir),
++		authStore: &authStoreState{},
++	}
++}
++
++func TestAuthContainerReusedAcrossClientStarts(t *testing.T) {
++	w := sqliteAuthService(t)
++	first, err := w.getAuthContainer()
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { _ = first.Close() })
++
++	for i := 0; i < 10; i++ {
++		container, err := w.getAuthContainer()
++		if err != nil {
++			t.Fatalf("client start %d: %v", i, err)
++		}
++		if container != first {
++			_ = container.Close()
++			t.Fatalf("client start %d opened another auth store", i)
++		}
++	}
++}
++
++func TestAuthContainerConcurrentStartsShareOneStore(t *testing.T) {
++	w := sqliteAuthService(t)
++	const starts = 12
++	containers := make([]*sqlstore.Container, starts)
++	errs := make([]error, starts)
++	var wg sync.WaitGroup
++	for i := range containers {
++		wg.Add(1)
++		go func(i int) {
++			defer wg.Done()
++			containers[i], errs[i] = w.getAuthContainer()
++		}(i)
++	}
++	wg.Wait()
++	for i, container := range containers {
++		if errs[i] != nil {
++			t.Fatalf("concurrent client start %d: %v", i, errs[i])
++		}
++		if container != containers[0] {
++			t.Fatalf("concurrent client start %d opened another auth store", i)
++		}
++	}
++	t.Cleanup(func() { _ = containers[0].Close() })
++}
++
++func TestAuthContainerRetriesAfterInitialFailure(t *testing.T) {
++	dir := t.TempDir()
++	w := whatsmeowService{
++		config:    &config.Config{},
++		exPath:    filepath.ToSlash(dir),
++		authStore: &authStoreState{},
++	}
++	if _, err := w.getAuthContainer(); err == nil {
++		t.Fatal("expected missing dbdata directory to fail")
++	}
++	if err := os.MkdirAll(filepath.Join(dir, "dbdata"), 0700); err != nil {
++		t.Fatal(err)
++	}
++	container, err := w.getAuthContainer()
++	if err != nil {
++		t.Fatalf("auth store did not recover after directory appeared: %v", err)
++	}
++	t.Cleanup(func() { _ = container.Close() })
++}
+diff --git a/pkg/whatsmeow/service/whatsmeow.go b/pkg/whatsmeow/service/whatsmeow.go
+index 366f0edb1..ae73b9c86 100644
+--- a/pkg/whatsmeow/service/whatsmeow.go
++++ b/pkg/whatsmeow/service/whatsmeow.go
+@@ -79,6 +79,7 @@ type clientVersion struct {
+ type whatsmeowService struct {
+ 	instanceRepository instance_repository.InstanceRepository
+ 	authDB             *sql.DB
++	authStore          *authStoreState
+ 	messageRepository  message_repository.MessageRepository
+ 	labelRepository    label_repository.LabelRepository
+ 	pollService        poll_service.PollService // NOVO: Serviço de enquetes
+@@ -99,6 +100,11 @@ type whatsmeowService struct {
+ 	passkeyCeremony    *ceremony.Store
+ }
+ 
++type authStoreState struct {
++	mu        sync.Mutex
++	container *sqlstore.Container
++}
++
+ type MyClient struct {
+ 	service            WhatsmeowService
+ 	WAClient           *whatsmeow.Client
+@@ -301,6 +307,46 @@ func (w whatsmeowService) ForceUpdateJid(instanceId string, number string) error
+ 	return nil
+ }
+ 
++func (w whatsmeowService) getAuthContainer() (*sqlstore.Container, error) {
++	if w.authStore == nil {
++		return nil, fmt.Errorf("auth store state is not initialized")
++	}
++	w.authStore.mu.Lock()
++	defer w.authStore.mu.Unlock()
++	if w.authStore.container != nil {
++		return w.authStore.container, nil
++	}
++
++	var dbLog waLog.Logger
++	if w.config.WaDebug != "" {
++		dbLog = waLog.Stdout("Database", w.config.WaDebug, true)
++	}
++
++	var container *sqlstore.Container
++	if w.config.PostgresAuthDB != "" {
++		if w.authDB == nil {
++			return nil, fmt.Errorf("PostgresAuthDB is configured but authDB is nil")
++		}
++		// The process already owns a bounded authDB pool. NewWithDB does not
++		// open another pool; main closes authDB when the process shuts down.
++		container = sqlstore.NewWithDB(w.authDB, "postgres", dbLog)
++		if err := container.Upgrade(context.Background()); err != nil {
++			// Do not close container: that would also close main's authDB.
++			// A later start may retry after a transient database outage.
++			return nil, fmt.Errorf("failed to upgrade auth store: %w", err)
++		}
++	} else {
++		dsn := fmt.Sprintf("file:%s/dbdata/main.db?_pragma=foreign_keys(1)&_busy_timeout=5000&cache=shared&mode=rwc&_journal_mode=WAL", w.exPath)
++		var err error
++		container, err = sqlstore.New(context.Background(), "sqlite", dsn, dbLog)
++		if err != nil {
++			return nil, err
++		}
++	}
++	w.authStore.container = container
++	return container, nil
++}
++
+ func (w whatsmeowService) StartClient(cd *ClientData) {
+ 
+ 	w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("Starting websocket connection to Whatsapp for user '%s'", cd.Instance.Id)
+@@ -314,25 +360,7 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
+ 		}
+ 	}
+ 
+-	var container *sqlstore.Container
+-
+-	if w.config.WaDebug != "" {
+-		dbLog := waLog.Stdout("Database", w.config.WaDebug, true)
+-		if w.config.PostgresAuthDB != "" {
+-			container, err = sqlstore.New(context.Background(), "postgres", w.config.PostgresAuthDB, dbLog)
+-		} else {
+-			dsn := fmt.Sprintf("file:%s/dbdata/main.db?_pragma=foreign_keys(1)&_busy_timeout=5000&cache=shared&mode=rwc&_journal_mode=WAL", w.exPath)
+-			container, err = sqlstore.New(context.Background(), "sqlite", dsn, dbLog)
+-		}
+-	} else {
+-		if w.config.PostgresAuthDB != "" {
+-			container, err = sqlstore.New(context.Background(), "postgres", w.config.PostgresAuthDB, nil)
+-		} else {
+-			dsn := fmt.Sprintf("file:%s/dbdata/main.db?_pragma=foreign_keys(1)&_busy_timeout=5000&cache=shared&mode=rwc&_journal_mode=WAL", w.exPath)
+-			container, err = sqlstore.New(context.Background(), "sqlite", dsn, nil)
+-		}
+-	}
+-
++	container, err := w.getAuthContainer()
+ 	if err != nil {
+ 		w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Failed to create container: %v", cd.Instance.Id, err)
+ 		return
+@@ -2813,6 +2841,7 @@ func NewWhatsmeowService(
+ 	return &whatsmeowService{
+ 		instanceRepository: instanceRepository,
+ 		authDB:             authDB,
++		authStore:          &authStoreState{},
+ 		messageRepository:  messageRepository,
+ 		labelRepository:    labelRepository,
+ 		pollService:        pollSvc, // NOVO: Serviço de enquetes
+
+From 9f2cdd03752c4a6d8c841a29f2a07d6333f54fd4 Mon Sep 17 00:00:00 2001
+From: jadercarvalhoPRM <jader.carvalho.ads@gmail.com>
+Date: Tue, 3 Nov 2026 13:41:57 -0300
+Subject: [PATCH 2/5] fix: apply dynamic WhatsApp version before connect
+
+---
+ .github/workflows/publish-auth-pool-ghcr.yml  | 171 ++++++++++++++++--
+ docker/ci/smoke-runtime.sh                    | 114 ++++++++++++
+ .../00-red-production.log                     |  13 ++
+ .../01-red-test.log                           |  11 ++
+ .../02-green-test.log                         |   8 +
+ .../03-green-real-whatsmeow-qr.log            |   9 +
+ .../service/wa_version_integration_test.go    |  96 ++++++++++
+ pkg/whatsmeow/service/wa_version_test.go      |  83 +++++++++
+ pkg/whatsmeow/service/whatsmeow.go            |  41 +++--
+ 9 files changed, 516 insertions(+), 30 deletions(-)
+ create mode 100755 docker/ci/smoke-runtime.sh
+ create mode 100644 evidence/fix-evolution-go-client-outdated/00-red-production.log
+ create mode 100644 evidence/fix-evolution-go-client-outdated/01-red-test.log
+ create mode 100644 evidence/fix-evolution-go-client-outdated/02-green-test.log
+ create mode 100644 evidence/fix-evolution-go-client-outdated/03-green-real-whatsmeow-qr.log
+ create mode 100644 pkg/whatsmeow/service/wa_version_integration_test.go
+ create mode 100644 pkg/whatsmeow/service/wa_version_test.go
+
+diff --git a/.github/workflows/publish-auth-pool-ghcr.yml b/.github/workflows/publish-auth-pool-ghcr.yml
+index e16a9d7cc..d79eb73df 100644
+--- a/.github/workflows/publish-auth-pool-ghcr.yml
++++ b/.github/workflows/publish-auth-pool-ghcr.yml
+@@ -1,56 +1,191 @@
+-name: Verify and publish auth pool fix
++name: Verify and publish WhatsApp 405 fix
+ 
+ on:
++  pull_request:
++    branches:
++      - main
++      - codex/fix-auth-pool
+   push:
+     branches:
+       - codex/fix-auth-pool
++      - codex/fix-wa-version-auth-pool
++  workflow_dispatch:
++
++concurrency:
++  group: publish-fix-405-${{ github.ref }}
++  cancel-in-progress: true
+ 
+ permissions:
+   contents: read
+ 
++env:
++  IMAGE_NAME: ghcr.io/jadercarvalhoprm/evolution-go-auth-pool
++  ROLLBACK_IMAGE: ghcr.io/jadercarvalhoprm/evolution-go-auth-pool@sha256:645e5bde7f97e3928f5a7d94cd8c37cbf79de7a595be684e26fb76db2d5a35fa
++
+ jobs:
+-  verify:
++  verify-go:
++    name: Go tests, build, and real WhatsApp QR
+     runs-on: ubuntu-latest
++    timeout-minutes: 30
+     steps:
+-      - uses: actions/checkout@v4
+-      - uses: actions/setup-go@v6
++      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
++
++      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+         with:
+           go-version-file: go.mod
+           cache: true
++
+       - name: Install native build dependencies
+         run: sudo apt-get update && sudo apt-get install -y libjpeg-dev libwebp-dev
++
+       - name: Test all packages
+         run: go test ./...
+-      - name: Check auth store concurrency
+-        run: go test -race ./pkg/whatsmeow/service -run 'Test(AuthContainer|PostgresAuthContainer)' -count=1
++
++      - name: Vet all packages
++        run: go vet ./...
++
++      - name: Race-test all packages
++        run: go test -race ./...
++
+       - name: Build server
+-        run: go build ./cmd/evolution-go
++        run: go build -o "${RUNNER_TEMP}/evolution-go" ./cmd/evolution-go
++
++      - name: Exercise real WhatsApp protocol until QR
++        env:
++          EVOLUTION_GO_WA_INTEGRATION: '1'
++        run: |
++          mkdir -p evidence/ci
++          go test ./pkg/whatsmeow/service \
++            -run '^TestIntegrationDynamicVersionReachesRealWhatsmeowQR$' \
++            -count=1 -v 2>&1 | tee evidence/ci/real-whatsmeow-qr.log
++
++      - name: Upload redacted protocol evidence
++        if: always()
++        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
++        with:
++          name: real-whatsmeow-qr-${{ github.run_id }}
++          path: evidence/ci/real-whatsmeow-qr.log
++          if-no-files-found: warn
++          retention-days: 7
++
++  image-gates:
++    name: Runtime image smoke and vulnerability scan
++    needs: verify-go
++    runs-on: ubuntu-latest
++    timeout-minutes: 35
++    steps:
++      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
++
++      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
++
++      - name: Build amd64 release candidate
++        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
++        with:
++          context: .
++          file: ./Dockerfile
++          platforms: linux/amd64
++          load: true
++          push: false
++          tags: local/evolution-go:e2e-${{ github.sha }}
++          build-args: VERSION=0.7.2-authpool-fix405-${{ github.sha }}
++          cache-from: type=gha
++          cache-to: type=gha,mode=max
++
++      - name: Smoke PostgreSQL, Redis, and API readiness
++        env:
++          E2E_IMAGE: local/evolution-go:e2e-${{ github.sha }}
++          E2E_ARTIFACT_DIR: ${{ runner.temp }}/evolution-go-runtime
++        run: ./docker/ci/smoke-runtime.sh
++
++      - name: Upload sanitized runtime evidence
++        if: always()
++        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
++        with:
++          name: runtime-smoke-sanitized-${{ github.run_id }}
++          path: ${{ runner.temp }}/evolution-go-runtime/
++          if-no-files-found: warn
++          retention-days: 7
++
++      - name: Scan release candidate
++        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
++        with:
++          image-ref: local/evolution-go:e2e-${{ github.sha }}
++          format: table
++          exit-code: '1'
++          ignore-unfixed: true
++          vuln-type: os,library
++          severity: HIGH,CRITICAL
+ 
+   publish:
+-    needs: verify
++    name: Publish multiarch image with supply-chain metadata
++    if: github.event_name != 'pull_request'
++    needs:
++      - verify-go
++      - image-gates
+     runs-on: ubuntu-latest
++    timeout-minutes: 45
+     permissions:
+       contents: read
+       packages: write
++      id-token: write
++      attestations: write
+     steps:
+-      - uses: actions/checkout@v4
+-      - uses: docker/setup-buildx-action@v3
+-      - uses: docker/login-action@v3
++      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
++
++      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
++
++      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
++
++      - name: Log in to GHCR
++        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+         with:
+           registry: ghcr.io
+           username: ${{ github.actor }}
+           password: ${{ secrets.GITHUB_TOKEN }}
+-      - name: Build and push commit-tagged image
++
++      - name: Compute immutable and channel tags
++        id: meta
++        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
++        with:
++          images: ${{ env.IMAGE_NAME }}
++          tags: |
++            type=sha,format=short,prefix=sha-
++            type=raw,value=fix-405
++          labels: |
++            org.opencontainers.image.title=Evolution Go auth pool with WhatsApp 405 fix
++            org.opencontainers.image.source=https://github.com/jadercarvalhoPRM/evolution-go
++            org.opencontainers.image.revision=${{ github.sha }}
++
++      - name: Build and push multiarch image
+         id: build
+-        uses: docker/build-push-action@v6
++        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+         with:
+           context: .
+           file: ./Dockerfile
+-          platforms: linux/amd64
++          platforms: linux/amd64,linux/arm64
+           push: true
+-          tags: ghcr.io/jadercarvalhoprm/evolution-go-auth-pool:0.7.2-${{ github.sha }}
+-          build-args: VERSION=0.7.2-authpool-${{ github.sha }}
++          tags: ${{ steps.meta.outputs.tags }}
++          labels: ${{ steps.meta.outputs.labels }}
++          build-args: VERSION=0.7.2-authpool-fix405-${{ github.sha }}
+           cache-from: type=gha
+           cache-to: type=gha,mode=max
+-      - name: Record image digest
+-        run: echo 'ghcr.io/jadercarvalhoprm/evolution-go-auth-pool@${{ steps.build.outputs.digest }}'
++          provenance: mode=max
++          sbom: true
++
++      - name: Attest image provenance
++        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
++        with:
++          subject-name: ${{ env.IMAGE_NAME }}
++          subject-digest: ${{ steps.build.outputs.digest }}
++          push-to-registry: true
++
++      - name: Record publication and rollback references
++        env:
++          PUBLISHED_DIGEST: ${{ steps.build.outputs.digest }}
++        run: |
++          {
++            echo '### GHCR publication'
++            echo
++            echo "Published: \`${IMAGE_NAME}@${PUBLISHED_DIGEST}\`"
++            echo "Rollback (preserved): \`${ROLLBACK_IMAGE}\`"
++          } >> "$GITHUB_STEP_SUMMARY"
+diff --git a/docker/ci/smoke-runtime.sh b/docker/ci/smoke-runtime.sh
+new file mode 100755
+index 000000000..604b537a0
+--- /dev/null
++++ b/docker/ci/smoke-runtime.sh
+@@ -0,0 +1,114 @@
++#!/usr/bin/env bash
++set -Eeuo pipefail
++
++: "${E2E_IMAGE:?E2E_IMAGE is required}"
++
++artifact_dir="${E2E_ARTIFACT_DIR:-${RUNNER_TEMP:-/tmp}/evolution-go-runtime}"
++mkdir -p "$artifact_dir"
++raw_log="$artifact_dir/application.raw.log"
++safe_log="$artifact_dir/application.sanitized.log"
++summary="$artifact_dir/summary.json"
++
++run_suffix="${GITHUB_RUN_ID:-local}-$(openssl rand -hex 4)"
++network="evogo-smoke-${run_suffix}"
++postgres_container="evogo-postgres-${run_suffix}"
++redis_container="evogo-redis-${run_suffix}"
++app_container="evogo-api-${run_suffix}"
++postgres_password="$(openssl rand -hex 24)"
++global_api_key="$(openssl rand -hex 32)"
++host_port=18080
++
++for secret in "$postgres_password" "$global_api_key"; do
++  if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
++    printf '::add-mask::%s\n' "$secret"
++  fi
++done
++
++cleanup() {
++  docker logs "$app_container" >"$raw_log" 2>&1 || true
++  if [[ -f "$raw_log" ]]; then
++    sed \
++      -e "s/${postgres_password}/[REDACTED_POSTGRES_PASSWORD]/g" \
++      -e "s/${global_api_key}/[REDACTED_GLOBAL_API_KEY]/g" \
++      -E -e 's#(postgres(ql)?://[^:[:space:]]+:)[^@[:space:]]+#\1[REDACTED]#g' \
++	  -E -e 's/[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}/[REDACTED_INSTANCE_ID]/g' \
++	  -E -e 's/[0-9]{8,}(:[0-9]+)?@(s\.whatsapp\.net|lid)/[REDACTED_JID]/g' \
++	  -E -e 's#data:image/png;base64,[A-Za-z0-9+/=]+#[REDACTED_QR_IMAGE]#g' \
++      "$raw_log" >"$safe_log"
++    rm -f "$raw_log"
++  else
++    : >"$safe_log"
++  fi
++  docker rm -f "$app_container" "$redis_container" "$postgres_container" >/dev/null 2>&1 || true
++  docker network rm "$network" >/dev/null 2>&1 || true
++}
++trap cleanup EXIT
++
++docker network create "$network" >/dev/null
++
++docker run -d --name "$postgres_container" --network "$network" \
++  --network-alias postgres \
++  -e POSTGRES_USER=postgres \
++  -e POSTGRES_PASSWORD="$postgres_password" \
++  -e POSTGRES_DB=postgres \
++  postgres:16-alpine >/dev/null
++
++# Redis is checked as a deployment dependency only. Evolution Go does not use it.
++docker run -d --name "$redis_container" --network "$network" \
++  --network-alias redis \
++  redis:7-alpine redis-server --save '' --appendonly no >/dev/null
++
++for _ in $(seq 1 60); do
++  if docker exec "$postgres_container" pg_isready -U postgres -d postgres >/dev/null 2>&1; then
++    break
++  fi
++  sleep 1
++done
++docker exec "$postgres_container" pg_isready -U postgres -d postgres >/dev/null
++docker exec "$redis_container" redis-cli ping | grep -qx PONG
++
++database_base="postgresql://postgres:${postgres_password}@postgres:5432"
++docker run -d --name "$app_container" --network "$network" \
++  -p "127.0.0.1:${host_port}:4000" \
++  -e SERVER_PORT=4000 \
++  -e CLIENT_NAME=evolution-ci \
++  -e GLOBAL_API_KEY="$global_api_key" \
++  -e POSTGRES_AUTH_DB="${database_base}/evogo_auth?sslmode=disable" \
++  -e POSTGRES_USERS_DB="${database_base}/evogo_users?sslmode=disable" \
++  -e DATABASE_SAVE_MESSAGES=false \
++  -e CONNECT_ON_STARTUP=false \
++  -e WEBHOOK_FILES=false \
++  -e OS_NAME=Linux \
++  -e AMQP_URL= \
++  -e AMQP_GLOBAL_ENABLED=false \
++  -e NATS_URL= \
++  -e NATS_GLOBAL_ENABLED=false \
++  -e MINIO_ENABLED=false \
++  -e QRCODE_MAX_COUNT=5 \
++  -e LOGTYPE=json \
++  -e WADEBUG=INFO \
++  "$E2E_IMAGE" >/dev/null
++
++base_url="http://127.0.0.1:${host_port}"
++ready=false
++for _ in $(seq 1 90); do
++  if curl --fail --silent --show-error "$base_url/server/ok" | jq -e '.status == "ok"' >/dev/null 2>&1; then
++    ready=true
++    break
++  fi
++  if ! docker inspect -f '{{.State.Running}}' "$app_container" 2>/dev/null | grep -qx true; then
++    echo 'API container exited before readiness' >&2
++    exit 1
++  fi
++  sleep 2
++done
++[[ "$ready" == true ]]
++
++jq -n \
++  --arg postgres healthy \
++  --arg redis healthy \
++  --arg api ready \
++  --arg license_scope 'not exercised; protocol gate runs at service layer' \
++  '{postgres:$postgres,redis:$redis,api:$api,license_scope:$license_scope}' >"$summary"
++
++echo 'Runtime image smoke passed: PostgreSQL healthy, Redis healthy, API ready'
+diff --git a/evidence/fix-evolution-go-client-outdated/00-red-production.log b/evidence/fix-evolution-go-client-outdated/00-red-production.log
+new file mode 100644
+index 000000000..a1fe4a7f8
+--- /dev/null
++++ b/evidence/fix-evolution-go-client-outdated/00-red-production.log
+@@ -0,0 +1,13 @@
++# Sanitized production incident excerpt
++# Instance IDs, account identifiers, hostnames, IPs, timestamps and credentials removed.
++# No secret-bearing request or response payload is retained.
++# Values below are copied from the user's attached production log with instance
++# UUID, account JID, IP address, timestamps and credentials omitted.
++
++[version discovery] latest WhatsApp Web version resolved to 2.3000.1052878631
++[Client ERROR] Client outdated (405) connect failure (client version: 2.3000.1042386815)
++[instance connect] POST /instance/connect returned HTTP 200 before the asynchronous handshake failure
++[instance qr] GET /instance/qr repeatedly returned HTTP 400 because no QR became available
++
++# Expected invariant: the dynamically resolved 2.3000.1052878631 must update
++# store.GetWAVersion and BaseClientPayload.UserAgent.AppVersion before NewClient/connect.
+diff --git a/evidence/fix-evolution-go-client-outdated/01-red-test.log b/evidence/fix-evolution-go-client-outdated/01-red-test.log
+new file mode 100644
+index 000000000..d4d8858be
+--- /dev/null
++++ b/evidence/fix-evolution-go-client-outdated/01-red-test.log
+@@ -0,0 +1,11 @@
++$ go test ./pkg/whatsmeow/service -run '^TestExactProductionMismatchUpdatesHandshakeState$' -count=1 -v
++=== RUN   TestExactProductionMismatchUpdatesHandshakeState
++    wa_version_exact_red_test.go:17: store.GetWAVersion() = 2.3000.1042386815, want dynamically fetched 2.3000.1052878631
++--- FAIL: TestExactProductionMismatchUpdatesHandshakeState (0.00s)
++FAIL
++FAIL github.com/evolution-foundation/evolution-go/pkg/whatsmeow/service 0.326s
++FAIL
++exit status: 1
++
++# Reproduced independently against base commit 1fafa80279fc19a19f80d3635aea77a21b7d1c25
++# after a behavior-preserving extraction of the existing DeviceProps assignment.
+diff --git a/evidence/fix-evolution-go-client-outdated/02-green-test.log b/evidence/fix-evolution-go-client-outdated/02-green-test.log
+new file mode 100644
+index 000000000..fa95549fc
+--- /dev/null
++++ b/evidence/fix-evolution-go-client-outdated/02-green-test.log
+@@ -0,0 +1,8 @@
++$ go test ./pkg/whatsmeow/service -run 'TestApplyDynamicWAVersionUpdatesHandshakeState|TestApplyInvalidWAVersionLeavesHandshakeStateUnchanged' -count=1 -v
++=== RUN   TestApplyDynamicWAVersionUpdatesHandshakeState
++--- PASS: TestApplyDynamicWAVersionUpdatesHandshakeState (0.00s)
++=== RUN   TestApplyInvalidWAVersionLeavesHandshakeStateUnchanged
++--- PASS: TestApplyInvalidWAVersionLeavesHandshakeStateUnchanged (0.00s)
++PASS
++ok  github.com/evolution-foundation/evolution-go/pkg/whatsmeow/service 0.304s
++exit status: 0
+diff --git a/evidence/fix-evolution-go-client-outdated/03-green-real-whatsmeow-qr.log b/evidence/fix-evolution-go-client-outdated/03-green-real-whatsmeow-qr.log
+new file mode 100644
+index 000000000..f10ac57a2
+--- /dev/null
++++ b/evidence/fix-evolution-go-client-outdated/03-green-real-whatsmeow-qr.log
+@@ -0,0 +1,9 @@
++$ EVOLUTION_GO_WA_INTEGRATION=1 go test ./pkg/whatsmeow/service -run '^TestIntegrationDynamicVersionReachesRealWhatsmeowQR$' -count=1 -v
++=== RUN   TestIntegrationDynamicVersionReachesRealWhatsmeowQR
++    wa_version_integration_test.go:72: real QR event received; QR payload redacted; fetched/applied version=2.3000.1052878631
++--- PASS: TestIntegrationDynamicVersionReachesRealWhatsmeowQR (1.43s)
++PASS
++ok  github.com/evolution-foundation/evolution-go/pkg/whatsmeow/service 1.655s
++exit status: 0
++
++# The ephemeral QR payload was intentionally not logged or persisted.
+diff --git a/pkg/whatsmeow/service/wa_version_integration_test.go b/pkg/whatsmeow/service/wa_version_integration_test.go
+new file mode 100644
+index 000000000..2027f13cd
+--- /dev/null
++++ b/pkg/whatsmeow/service/wa_version_integration_test.go
+@@ -0,0 +1,96 @@
++package whatsmeow_service
++
++import (
++	"context"
++	"os"
++	"path/filepath"
++	"testing"
++	"time"
++
++	"go.mau.fi/whatsmeow"
++	"go.mau.fi/whatsmeow/store"
++	"go.mau.fi/whatsmeow/store/sqlstore"
++	"google.golang.org/protobuf/proto"
++	_ "modernc.org/sqlite"
++)
++
++func TestIntegrationDynamicVersionReachesRealWhatsmeowQR(t *testing.T) {
++	if os.Getenv("EVOLUTION_GO_WA_INTEGRATION") != "1" {
++		t.Skip("set EVOLUTION_GO_WA_INTEGRATION=1 to connect to WhatsApp and await a real QR event")
++	}
++
++	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
++	defer cancel()
++
++	dynamicVersion, err := fetchWhatsAppWebVersion()
++	if err != nil {
++		t.Fatalf("fetch dynamic WhatsApp Web version: %v", err)
++	}
++	originalVersion := store.GetWAVersion()
++	originalDeviceVersion := [3]uint32{
++		store.DeviceProps.Version.GetPrimary(),
++		store.DeviceProps.Version.GetSecondary(),
++		store.DeviceProps.Version.GetTertiary(),
++	}
++	t.Cleanup(func() {
++		waVersionApplyMu.Lock()
++		defer waVersionApplyMu.Unlock()
++		store.SetWAVersion(originalVersion)
++		store.DeviceProps.Version.Primary = proto.Uint32(originalDeviceVersion[0])
++		store.DeviceProps.Version.Secondary = proto.Uint32(originalDeviceVersion[1])
++		store.DeviceProps.Version.Tertiary = proto.Uint32(originalDeviceVersion[2])
++	})
++	applyWhatsAppVersion(*dynamicVersion)
++
++	want := store.WAVersionContainer{
++		uint32(dynamicVersion.Major),
++		uint32(dynamicVersion.Minor),
++		uint32(dynamicVersion.Patch),
++	}
++	if got := store.GetWAVersion(); got != want {
++		t.Fatalf("applied version %s differs from fetched version %s", got.String(), want.String())
++	}
++	payloadVersion := store.BaseClientPayload.GetUserAgent().GetAppVersion()
++	if got := [3]uint32{payloadVersion.GetPrimary(), payloadVersion.GetSecondary(), payloadVersion.GetTertiary()}; got != want {
++		t.Fatalf("handshake payload version %v differs from fetched version %v", got, want)
++	}
++
++	dbPath := filepath.Join(t.TempDir(), "wa-integration.db")
++	container, err := sqlstore.New(ctx, "sqlite", "file:"+dbPath+"?_pragma=foreign_keys(1)", nil)
++	if err != nil {
++		t.Fatalf("create real whatsmeow store: %v", err)
++	}
++	t.Cleanup(func() { _ = container.Close() })
++
++	client := whatsmeow.NewClient(container.NewDevice(), nil)
++	qrEvents, err := client.GetQRChannel(ctx)
++	if err != nil {
++		t.Fatalf("create QR event channel: %v", err)
++	}
++	if err = client.Connect(); err != nil {
++		t.Fatalf("connect real whatsmeow client: %v", err)
++	}
++	t.Cleanup(client.Disconnect)
++
++	for {
++		select {
++		case <-ctx.Done():
++			t.Fatalf("timed out waiting for real QR event: %v", ctx.Err())
++		case event, ok := <-qrEvents:
++			if !ok {
++				t.Fatal("QR event channel closed before a QR code was received")
++			}
++			switch event.Event {
++			case whatsmeow.QRChannelEventCode:
++				t.Logf("real QR event received; QR payload redacted; fetched/applied version=%s", want.String())
++				return
++			case whatsmeow.QRChannelClientOutdated.Event:
++				t.Fatalf("WhatsApp rejected fetched/applied version %s with ClientOutdated (405)", want.String())
++			case whatsmeow.QRChannelEventError:
++				t.Fatalf("WhatsApp QR flow failed before QR: %v", event.Error)
++			case whatsmeow.QRChannelTimeout.Event:
++				t.Fatal("WhatsApp disconnected before producing a QR event")
++			}
++		}
++	}
++}
+diff --git a/pkg/whatsmeow/service/wa_version_test.go b/pkg/whatsmeow/service/wa_version_test.go
+new file mode 100644
+index 000000000..488c83b5a
+--- /dev/null
++++ b/pkg/whatsmeow/service/wa_version_test.go
+@@ -0,0 +1,83 @@
++package whatsmeow_service
++
++import (
++	"sync"
++	"testing"
++
++	"go.mau.fi/whatsmeow/store"
++	"google.golang.org/protobuf/proto"
++)
++
++func preserveWhatsAppVersionGlobals(t *testing.T) {
++	t.Helper()
++	originalVersion := store.GetWAVersion()
++	originalDeviceVersion := [3]uint32{
++		store.DeviceProps.Version.GetPrimary(),
++		store.DeviceProps.Version.GetSecondary(),
++		store.DeviceProps.Version.GetTertiary(),
++	}
++	t.Cleanup(func() {
++		waVersionApplyMu.Lock()
++		defer waVersionApplyMu.Unlock()
++		store.SetWAVersion(originalVersion)
++		store.DeviceProps.Version.Primary = proto.Uint32(originalDeviceVersion[0])
++		store.DeviceProps.Version.Secondary = proto.Uint32(originalDeviceVersion[1])
++		store.DeviceProps.Version.Tertiary = proto.Uint32(originalDeviceVersion[2])
++	})
++}
++
++func TestApplyDynamicWAVersionUpdatesHandshakeState(t *testing.T) {
++	preserveWhatsAppVersionGlobals(t)
++
++	// Exact mismatch captured in the production incident: discovery resolved
++	// 1052878631 while the Noise handshake still advertised 1042386815.
++	store.SetWAVersion(store.WAVersionContainer{2, 3000, 1042386815})
++
++	dynamicVersion := clientVersion{Major: 2, Minor: 3000, Patch: 1052878631}
++	want := store.WAVersionContainer{2, 3000, 1052878631}
++	applyWhatsAppVersion(dynamicVersion)
++
++	if got := store.GetWAVersion(); got != want {
++		t.Fatalf("store.GetWAVersion() = %s, want dynamically fetched %s", got.String(), want.String())
++	}
++	payloadVersion := store.BaseClientPayload.GetUserAgent().GetAppVersion()
++	if got := [3]uint32{payloadVersion.GetPrimary(), payloadVersion.GetSecondary(), payloadVersion.GetTertiary()}; got != want {
++		t.Fatalf("BaseClientPayload UserAgent AppVersion = %v, want %v", got, want)
++	}
++	deviceVersion := store.DeviceProps.GetVersion()
++	if got := [3]uint32{deviceVersion.GetPrimary(), deviceVersion.GetSecondary(), deviceVersion.GetTertiary()}; got != want {
++		t.Fatalf("DeviceProps Version = %v, want %v", got, want)
++	}
++}
++
++func TestApplyInvalidWAVersionLeavesHandshakeStateUnchanged(t *testing.T) {
++	preserveWhatsAppVersionGlobals(t)
++	originalVersion := store.GetWAVersion()
++
++	applyWhatsAppVersion(clientVersion{})
++
++	if got := store.GetWAVersion(); got != originalVersion {
++		t.Fatalf("zero version changed handshake state from %s to %s", originalVersion.String(), got.String())
++	}
++}
++
++func TestConcurrentWAVersionApplicationIsRaceFree(t *testing.T) {
++	preserveWhatsAppVersionGlobals(t)
++
++	version := clientVersion{Major: 2, Minor: 3000, Patch: 1052878631}
++	const starts = 16
++	var wg sync.WaitGroup
++	for range starts {
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			applyWhatsAppVersion(version)
++		}()
++	}
++	wg.Wait()
++
++	want := store.WAVersionContainer{2, 3000, 1052878631}
++	if got := store.GetWAVersion(); got != want {
++		t.Fatalf("concurrent application left version %s, want %s", got.String(), want.String())
++	}
++}
+diff --git a/pkg/whatsmeow/service/whatsmeow.go b/pkg/whatsmeow/service/whatsmeow.go
+index ae73b9c86..88716d9c7 100644
+--- a/pkg/whatsmeow/service/whatsmeow.go
++++ b/pkg/whatsmeow/service/whatsmeow.go
+@@ -76,6 +76,29 @@ type clientVersion struct {
+ 	Patch int
+ }
+ 
++var waVersionApplyMu sync.Mutex
++
++func applyWhatsAppVersion(version clientVersion) {
++	if version.Major <= 0 || version.Minor <= 0 || version.Patch <= 0 {
++		return
++	}
++
++	waVersionApplyMu.Lock()
++	defer waVersionApplyMu.Unlock()
++
++	waVersion := store.WAVersionContainer{uint32(version.Major), uint32(version.Minor), uint32(version.Patch)}
++	if store.GetWAVersion() != waVersion {
++		store.SetWAVersion(waVersion)
++	}
++	if store.DeviceProps.Version.GetPrimary() != uint32(version.Major) ||
++		store.DeviceProps.Version.GetSecondary() != uint32(version.Minor) ||
++		store.DeviceProps.Version.GetTertiary() != uint32(version.Patch) {
++		store.DeviceProps.Version.Primary = proto.Uint32(uint32(version.Major))
++		store.DeviceProps.Version.Secondary = proto.Uint32(uint32(version.Minor))
++		store.DeviceProps.Version.Tertiary = proto.Uint32(uint32(version.Patch))
++	}
++}
++
+ type whatsmeowService struct {
+ 	instanceRepository instance_repository.InstanceRepository
+ 	authDB             *sql.DB
+@@ -406,17 +429,9 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
+ 	if w.config.WhatsappVersionMajor != 0 && w.config.WhatsappVersionMinor != 0 && w.config.WhatsappVersionPatch != 0 {
+ 		w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Setting whatsapp version to %d.%d.%d", cd.Instance.Id, w.config.WhatsappVersionMajor, w.config.WhatsappVersionMinor, w.config.WhatsappVersionPatch)
+ 		version.Major = w.config.WhatsappVersionMajor
+-		if err == nil {
+-			store.DeviceProps.Version.Primary = proto.Uint32(uint32(version.Major))
+-		}
+ 		version.Minor = w.config.WhatsappVersionMinor
+-		if err == nil {
+-			store.DeviceProps.Version.Secondary = proto.Uint32(uint32(version.Minor))
+-		}
+ 		version.Patch = w.config.WhatsappVersionPatch
+-		if err == nil {
+-			store.DeviceProps.Version.Tertiary = proto.Uint32(uint32(version.Patch))
+-		}
++		applyWhatsAppVersion(version)
+ 	} else {
+ 		// Try to fetch version from WhatsApp Web
+ 		webVersion, err := fetchWhatsAppWebVersion()
+@@ -425,11 +440,13 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
+ 		} else {
+ 			w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Setting whatsapp version from web to %d.%d.%d", cd.Instance.Id, webVersion.Major, webVersion.Minor, webVersion.Patch)
+ 			version = *webVersion
+-			store.DeviceProps.Version.Primary = proto.Uint32(uint32(version.Major))
+-			store.DeviceProps.Version.Secondary = proto.Uint32(uint32(version.Minor))
+-			store.DeviceProps.Version.Tertiary = proto.Uint32(uint32(version.Patch))
++			applyWhatsAppVersion(version)
+ 		}
+ 	}
++	if version.Major > 0 && version.Minor > 0 && version.Patch > 0 {
++		appliedVersion := store.WAVersionContainer{uint32(version.Major), uint32(version.Minor), uint32(version.Patch)}
++		w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Applied whatsmeow store.SetWAVersion to %s", cd.Instance.Id, appliedVersion.String())
++	}
+ 
+ 	// 🔒 FIX: Sempre criar logger, mesmo que WaDebug esteja vazio
+ 	// Usar "INFO" como nível mínimo para garantir que logs importantes apareçam
+
+From 1b621a577178c723ccb83501651fa08ef2dcd4d7 Mon Sep 17 00:00:00 2001
+From: jadercarvalhoPRM <jader.carvalho.ads@gmail.com>
+Date: Tue, 3 Nov 2026 13:52:50 -0300
+Subject: [PATCH 3/5] fix: refresh secure runtime dependencies
+
+---
+ Dockerfile |  4 ++--
+ go.mod     | 30 ++++++++++++++--------------
+ go.sum     | 57 +++++++++++++++++++++++++++---------------------------
+ 3 files changed, 46 insertions(+), 45 deletions(-)
+
+diff --git a/Dockerfile b/Dockerfile
+index 462ed49d6..36db21207 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -1,4 +1,4 @@
+-FROM golang:1.25.0-alpine AS build
++FROM golang:1.26.10-alpine@sha256:a2012b4a1d1f9f7e9f44e0d39b805a901e856b1dd80b4e6ee4338db547050308 AS build
+ 
+ RUN apk update && apk add --no-cache git build-base libjpeg-turbo-dev libwebp-dev
+ 
+@@ -17,7 +17,7 @@ COPY . .
+ ARG VERSION=dev
+ RUN CGO_ENABLED=1 go build -ldflags "-X main.version=${VERSION}" -o server ./cmd/evolution-go
+ 
+-FROM alpine:3.19.1 AS final
++FROM alpine:3.23.3@sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f2198c3f659 AS final
+ 
+ # poppler-utils provides pdftoppm, used to rasterize PDF page 1 for /send/media document thumbnails
+ RUN apk update && apk add --no-cache tzdata ffmpeg libjpeg-turbo libwebp poppler-utils
+diff --git a/go.mod b/go.mod
+index c1c97f6a5..caae885ff 100644
+--- a/go.mod
++++ b/go.mod
+@@ -1,10 +1,12 @@
+ module github.com/evolution-foundation/evolution-go
+ 
+-go 1.25.0
++go 1.26.0
++
++toolchain go1.26.10
+ 
+ require (
+ 	github.com/DATA-DOG/go-sqlmock v1.5.2
+-	github.com/chai2010/webp v1.1.1
++	github.com/chai2010/webp v1.4.0
+ 	github.com/gabriel-vasile/mimetype v1.4.5
+ 	github.com/gin-gonic/gin v1.10.0
+ 	github.com/gomessguii/logger v0.0.3
+@@ -15,7 +17,7 @@ require (
+ 	github.com/minio/minio-go/v7 v7.0.80
+ 	github.com/nats-io/nats.go v1.39.0
+ 	github.com/patrickmn/go-cache v2.1.0+incompatible
+-	github.com/rabbitmq/amqp091-go v1.10.0
++	github.com/rabbitmq/amqp091-go v1.13.0
+ 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
+ 	github.com/swaggo/files v1.0.1
+ 	github.com/swaggo/gin-swagger v1.6.0
+@@ -23,8 +25,8 @@ require (
+ 	github.com/vincent-petithory/dataurl v1.0.0
+ 	go.mau.fi/whatsmeow v0.0.0-20260630180629-b572e5bcb92b
+ 	golang.org/x/exp v0.0.0-20260611194520-c48552f49976
+-	golang.org/x/image v0.0.0-20211028202545-6944b10bf410
+-	golang.org/x/net v0.56.0
++	golang.org/x/image v0.45.0
++	golang.org/x/net v0.60.0
+ 	google.golang.org/protobuf v1.36.11
+ 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
+ 	gorm.io/driver/postgres v1.5.9
+@@ -55,14 +57,14 @@ require (
+ 	github.com/goccy/go-json v0.10.3 // indirect
+ 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
+ 	github.com/jackc/pgpassfile v1.0.0 // indirect
+-	github.com/jackc/pgservicefile v0.0.0-20221227161230-091c0ba34f0a // indirect
+-	github.com/jackc/pgx/v5 v5.5.5 // indirect
+-	github.com/jackc/puddle/v2 v2.2.1 // indirect
++	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
++	github.com/jackc/pgx/v5 v5.9.0 // indirect
++	github.com/jackc/puddle/v2 v2.2.2 // indirect
+ 	github.com/jinzhu/inflection v1.0.0 // indirect
+ 	github.com/jinzhu/now v1.1.5 // indirect
+ 	github.com/josharian/intern v1.0.0 // indirect
+ 	github.com/json-iterator/go v1.1.12 // indirect
+-	github.com/klauspost/compress v1.17.11 // indirect
++	github.com/klauspost/compress v1.18.7 // indirect
+ 	github.com/klauspost/cpuid/v2 v2.2.8 // indirect
+ 	github.com/leodido/go-urn v1.4.0 // indirect
+ 	github.com/mailru/easyjson v0.7.7 // indirect
+@@ -86,11 +88,11 @@ require (
+ 	go.mau.fi/libsignal v0.2.2 // indirect
+ 	go.mau.fi/util v0.9.10 // indirect
+ 	golang.org/x/arch v0.10.0 // indirect
+-	golang.org/x/crypto v0.53.0 // indirect
+-	golang.org/x/sync v0.21.0 // indirect
+-	golang.org/x/sys v0.46.0 // indirect
+-	golang.org/x/text v0.38.0 // indirect
+-	golang.org/x/tools v0.46.0 // indirect
++	golang.org/x/crypto v0.57.0 // indirect
++	golang.org/x/sync v0.23.0 // indirect
++	golang.org/x/sys v0.48.0 // indirect
++	golang.org/x/text v0.42.0 // indirect
++	golang.org/x/tools v0.49.0 // indirect
+ 	gopkg.in/yaml.v3 v3.0.1 // indirect
+ 	modernc.org/gc/v3 v3.0.0-20240107210532-573471604cb6 // indirect
+ 	modernc.org/libc v1.55.3 // indirect
+diff --git a/go.sum b/go.sum
+index c8e3eefc1..b817546ce 100644
+--- a/go.sum
++++ b/go.sum
+@@ -15,8 +15,8 @@ github.com/bytedance/sonic v1.12.2/go.mod h1:B8Gt/XvtZ3Fqj+iSKMypzymZxw/FVwgIGKz
+ github.com/bytedance/sonic/loader v0.1.1/go.mod h1:ncP89zfokxS5LZrJxl5z0UJcsk4M4yY2JpfqGeCtNLU=
+ github.com/bytedance/sonic/loader v0.2.0 h1:zNprn+lsIP06C/IqCHs3gPQIvnvpKbbxyXQP1iU4kWM=
+ github.com/bytedance/sonic/loader v0.2.0/go.mod h1:ncP89zfokxS5LZrJxl5z0UJcsk4M4yY2JpfqGeCtNLU=
+-github.com/chai2010/webp v1.1.1 h1:jTRmEccAJ4MGrhFOrPMpNGIJ/eybIgwKpcACsrTEapk=
+-github.com/chai2010/webp v1.1.1/go.mod h1:0XVwvZWdjjdxpUEIf7b9g9VkHFnInUSYujwqTLEuldU=
++github.com/chai2010/webp v1.4.0 h1:6DA2pkkRUPnbOHvvsmGI3He1hBKf/bkRlniAiSGuEko=
++github.com/chai2010/webp v1.4.0/go.mod h1:0XVwvZWdjjdxpUEIf7b9g9VkHFnInUSYujwqTLEuldU=
+ github.com/cloudwego/base64x v0.1.4 h1:jwCgWpFanWmN8xoIUHa2rtzmkd5J2plF/dnLS6Xd/0Y=
+ github.com/cloudwego/base64x v0.1.4/go.mod h1:0zlkT4Wn5C6NdauXdJRhSKRlJvmclQ1hhJgA0rcu/8w=
+ github.com/cloudwego/iasm v0.2.0 h1:1KNIy1I1H9hNNFEEH3DVnI4UujN+1zjpuk6gwHLTssg=
+@@ -73,12 +73,12 @@ github.com/hashicorp/golang-lru/v2 v2.0.7 h1:a+bsQ5rvGLjzHuww6tVxozPZFVghXaHOwFs
+ github.com/hashicorp/golang-lru/v2 v2.0.7/go.mod h1:QeFd9opnmA6QUJc5vARoKUSoFhyfM2/ZepoAG6RGpeM=
+ github.com/jackc/pgpassfile v1.0.0 h1:/6Hmqy13Ss2zCq62VdNG8tM1wchn8zjSGOBJ6icpsIM=
+ github.com/jackc/pgpassfile v1.0.0/go.mod h1:CEx0iS5ambNFdcRtxPj5JhEz+xB6uRky5eyVu/W2HEg=
+-github.com/jackc/pgservicefile v0.0.0-20221227161230-091c0ba34f0a h1:bbPeKD0xmW/Y25WS6cokEszi5g+S0QxI/d45PkRi7Nk=
+-github.com/jackc/pgservicefile v0.0.0-20221227161230-091c0ba34f0a/go.mod h1:5TJZWKEWniPve33vlWYSoGYefn3gLQRzjfDlhSJ9ZKM=
+-github.com/jackc/pgx/v5 v5.5.5 h1:amBjrZVmksIdNjxGW/IiIMzxMKZFelXbUoPNb+8sjQw=
+-github.com/jackc/pgx/v5 v5.5.5/go.mod h1:ez9gk+OAat140fv9ErkZDYFWmXLfV+++K0uAOiwgm1A=
+-github.com/jackc/puddle/v2 v2.2.1 h1:RhxXJtFG022u4ibrCSMSiu5aOq1i77R3OHKNJj77OAk=
+-github.com/jackc/puddle/v2 v2.2.1/go.mod h1:vriiEXHvEE654aYKXXjOvZM39qJ0q+azkZFrfEOc3H4=
++github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 h1:iCEnooe7UlwOQYpKFhBabPMi4aNAfoODPEFNiAnClxo=
++github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761/go.mod h1:5TJZWKEWniPve33vlWYSoGYefn3gLQRzjfDlhSJ9ZKM=
++github.com/jackc/pgx/v5 v5.9.0 h1:T/dI+2TvmI2H8s/KH1/lXIbz1CUFk3gn5oTjr0/mBsE=
++github.com/jackc/pgx/v5 v5.9.0/go.mod h1:mal1tBGAFfLHvZzaYh77YS/eC6IX9OWbRV1QIIM0Jn4=
++github.com/jackc/puddle/v2 v2.2.2 h1:PR8nw+E/1w0GLuRFSmiioY6UooMp6KJv0/61nB7icHo=
++github.com/jackc/puddle/v2 v2.2.2/go.mod h1:vriiEXHvEE654aYKXXjOvZM39qJ0q+azkZFrfEOc3H4=
+ github.com/jinzhu/inflection v1.0.0 h1:K317FqzuhWc8YvSVlFMCCUb36O/S9MCKRDI7QkRKD/E=
+ github.com/jinzhu/inflection v1.0.0/go.mod h1:h+uFLlag+Qp1Va5pdKtLDYj+kHp5pxUVkryuEj+Srlc=
+ github.com/jinzhu/now v1.1.5 h1:/o9tlHleP7gOFmsnYNz3RGnqzefHA47wQpKrrdTIwXQ=
+@@ -90,8 +90,8 @@ github.com/josharian/intern v1.0.0/go.mod h1:5DoeVV0s6jJacbCEi61lwdGj/aVlrQvzHFF
+ github.com/json-iterator/go v1.1.12 h1:PV8peI4a0ysnczrg+LtxykD8LfKY9ML6u2jnxaEnrnM=
+ github.com/json-iterator/go v1.1.12/go.mod h1:e30LSqwooZae/UwlEbR2852Gd8hjQvJoHmT4TnhNGBo=
+ github.com/kisielk/sqlstruct v0.0.0-20201105191214-5f3e10d3ab46/go.mod h1:yyMNCyc/Ib3bDTKd379tNMpB/7/H5TjM2Y9QJ5THLbE=
+-github.com/klauspost/compress v1.17.11 h1:In6xLpyWOi1+C7tXUUWv2ot1QvBjxevKAaI6IXrJmUc=
+-github.com/klauspost/compress v1.17.11/go.mod h1:pMDklpSncoRMuLFrf1W9Ss9KT+0rH90U12bZKk7uwG0=
++github.com/klauspost/compress v1.18.7 h1:aUyZsS4kH3QTKurYhAOwAHxllVPnOthb3vPfnF1Ehjw=
++github.com/klauspost/compress v1.18.7/go.mod h1:cwPg85FWrGar70rWktvGQj8/hthj3wpl0PGDogxkrSQ=
+ github.com/klauspost/cpuid/v2 v2.0.1/go.mod h1:FInQzS24/EEf25PyTYn52gqo7WaD8xa0213Md/qVLRg=
+ github.com/klauspost/cpuid/v2 v2.0.9/go.mod h1:FInQzS24/EEf25PyTYn52gqo7WaD8xa0213Md/qVLRg=
+ github.com/klauspost/cpuid/v2 v2.2.8 h1:+StwCXwm9PdpiEkPyzBXIy+M9KUb4ODm0Zarf1kS5BM=
+@@ -138,8 +138,8 @@ github.com/petermattis/goid v0.0.0-20260330135022-df67b199bc81 h1:WDsQxOJDy0N1VR
+ github.com/petermattis/goid v0.0.0-20260330135022-df67b199bc81/go.mod h1:pxMtw7cyUw6B2bRH0ZBANSPg+AoSud1I1iyJHI69jH4=
+ github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
+ github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
+-github.com/rabbitmq/amqp091-go v1.10.0 h1:STpn5XsHlHGcecLmMFCtg7mqq0RnD+zFr4uzukfVhBw=
+-github.com/rabbitmq/amqp091-go v1.10.0/go.mod h1:Hy4jKW5kQART1u+JkDTF9YYOQUHXqMuhrgxOEeS7G4o=
++github.com/rabbitmq/amqp091-go v1.13.0 h1:L8NA1WtF76C6KA3LAoufjfLgbist/If1UQYcsOjtxXA=
++github.com/rabbitmq/amqp091-go v1.13.0/go.mod h1:Hy4jKW5kQART1u+JkDTF9YYOQUHXqMuhrgxOEeS7G4o=
+ github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94icq4NjY3clb7Lk8O1qJ8BdBEF8z0ibU0rE=
+ github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec/go.mod h1:qqbHyh8v60DhA7CoWK5oRCqLrMHRGoxYCSS9EjAz6Eo=
+ github.com/rogpeppe/go-internal v1.12.0 h1:exVL4IDcn6na9z1rAb56Vxr+CgyK3nn3O+epU5NdKM8=
+@@ -189,25 +189,25 @@ golang.org/x/arch v0.10.0 h1:S3huipmSclq3PJMNe76NGwkBR504WFkQ5dhzWzP8ZW8=
+ golang.org/x/arch v0.10.0/go.mod h1:FEVrYAQjsQXMVJ1nsMoVVXPZg6p2JE2mx8psSWTDQys=
+ golang.org/x/crypto v0.0.0-20190308221718-c2843e01d9a2/go.mod h1:djNgcEr1/C05ACkg1iLfiJU5Ep61QUkGW8qpdssI0+w=
+ golang.org/x/crypto v0.0.0-20210921155107-089bfa567519/go.mod h1:GvvjBRRGRdwPK5ydBHafDWAxML/pGHZbMvKqRZ5+Abc=
+-golang.org/x/crypto v0.53.0 h1:QZ4Muo8THX6CizN2vPPd5fBGHyogrdK9fG4wLPFUsto=
+-golang.org/x/crypto v0.53.0/go.mod h1:DNLU434OwVakk9PzuwV8w62mAJpRJL3vsgcfp4Qnsio=
++golang.org/x/crypto v0.57.0 h1:3ZVCjf8Ggz7zneR/EHRVx68Ctf+2pmIMP2UFhh9cC6M=
++golang.org/x/crypto v0.57.0/go.mod h1:Fdz0i5U6CoizGwLda9DttjSk6qlZo25zYNtR+ycvuZA=
+ golang.org/x/exp v0.0.0-20260611194520-c48552f49976 h1:X8Hz2ImujgbmetVuW+w2YkyZChE3cBpZi2P158rTG9M=
+ golang.org/x/exp v0.0.0-20260611194520-c48552f49976/go.mod h1:vnf4pv9iKZXY58sQE1L86zmNWJ4159e1RkcWiLCkeEY=
+-golang.org/x/image v0.0.0-20211028202545-6944b10bf410 h1:hTftEOvwiOq2+O8k2D5/Q7COC7k5Qcrgc2TFURJYnvQ=
+-golang.org/x/image v0.0.0-20211028202545-6944b10bf410/go.mod h1:023OzeP/+EPmXeapQh35lcL3II3LrY8Ic+EFFKVhULM=
++golang.org/x/image v0.45.0 h1:FMb1nTbH5H9vF55SriQHgFw5GnNL9Jg6L25BwXKzhB0=
++golang.org/x/image v0.45.0/go.mod h1:n62x/7RqlwXDvGsSU4u6IUTUf6KghUZ9Bt7cG/T9Fx4=
+ golang.org/x/mod v0.6.0-dev.0.20220419223038-86c51ed26bb4/go.mod h1:jJ57K6gSWd91VN4djpZkiMVwK6gcyfeH4XE8wZrZaV4=
+-golang.org/x/mod v0.37.0 h1:vF1DjpVEshcIqoEaauuHebaLk1O1forxjxBaVn884JQ=
+-golang.org/x/mod v0.37.0/go.mod h1:m8S8VeM9r4dzDwjrKO0a1sZP3YjeMamRRlD+fmR2Q/0=
++golang.org/x/mod v0.41.0 h1:qJmnOUb4YB+FsEuM3HcWucdZASCPGhsX6uljO6pog0c=
++golang.org/x/mod v0.41.0/go.mod h1:Ek9pY8RKWXwsWvd3rQiHYtMqkjSUV+s1Rj7j4H5Ur6o=
+ golang.org/x/net v0.0.0-20190620200207-3b0461eec859/go.mod h1:z5CRVTTTmAJ677TzLLGU+0bjPO0LkuOLi4/5GtJWs/s=
+ golang.org/x/net v0.0.0-20210226172049-e18ecbb05110/go.mod h1:m0MpNAwzfU5UDzcl9v0D8zg8gWTRqZa9RBIspLL5mdg=
+ golang.org/x/net v0.0.0-20220722155237-a158d28d115b/go.mod h1:XRhObCWvk6IyKnWLug+ECip1KBveYUHfp+8e9klMJ9c=
+ golang.org/x/net v0.7.0/go.mod h1:2Tu9+aMcznHK/AK1HMvgo6xiTLG5rD5rZLDS+rp2Bjs=
+-golang.org/x/net v0.56.0 h1:Rw8j/hFzGvJUZwNBXnAtf5sVDVt+65SK2C7IxCxZt5o=
+-golang.org/x/net v0.56.0/go.mod h1:D3Ku6r+V6JROoZK144D2XfMHFcMq/0zSfLelVTCFKec=
++golang.org/x/net v0.60.0 h1:79p50tfZlm0J9YfoDsSi639qSXNGVwEzOPLCxM2FsYU=
++golang.org/x/net v0.60.0/go.mod h1:2DA/G1UfVbCpQPeWTmMPGY7Cs2PkBkwu743bVX5PIVg=
+ golang.org/x/sync v0.0.0-20190423024810-112230192c58/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
+ golang.org/x/sync v0.0.0-20220722155255-886fb9371eb4/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
+-golang.org/x/sync v0.21.0 h1:HLII4xRRTtCRkxYp4HNFF0Js/Og6q2i++KXbg0gHCwM=
+-golang.org/x/sync v0.21.0/go.mod h1:9xrNwdLfx4jkKbNva9FpL6vEN7evnE43NNNJQ2LF3+0=
++golang.org/x/sync v0.23.0 h1:KameEIfc1IkluZyXWLn39Wd4tURc6GbCiISGiZm2bQk=
++golang.org/x/sync v0.23.0/go.mod h1:sUUOizhqBxiL6pEWpqNLUiaJn1ShEbZ6BBqskPbjZm0=
+ golang.org/x/sys v0.0.0-20190215142949-d0b11bdaac8a/go.mod h1:STP8DvDyc/dI5b8T5hshtkjS+E42TnysNCUPdjciGhY=
+ golang.org/x/sys v0.0.0-20201119102817-f84b799fce68/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
+ golang.org/x/sys v0.0.0-20210615035016-665e8c7367d1/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+@@ -215,23 +215,22 @@ golang.org/x/sys v0.0.0-20220520151302-bc2c85ada10a/go.mod h1:oPkhp1MJrh7nUepCBc
+ golang.org/x/sys v0.0.0-20220722155257-8c9f86f7a55f/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+ golang.org/x/sys v0.5.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+ golang.org/x/sys v0.6.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+-golang.org/x/sys v0.46.0 h1:noSf2Fq6F8DBgS+LysIkx7rIExoNHJsxOAtPp4rthXw=
+-golang.org/x/sys v0.46.0/go.mod h1:4GL1E5IUh+htKOUEOaiffhrAeqysfVGipDYzABqnCmw=
++golang.org/x/sys v0.48.0 h1:bbX/i/6MgT9BVLM9RT1thmxL04yeTAhbEz4SyadbXoo=
++golang.org/x/sys v0.48.0/go.mod h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og=
+ golang.org/x/term v0.0.0-20201126162022-7de9c90e9dd1/go.mod h1:bj7SfCRtBDWHUb9snDiAeCFNEtKQo2Wmx5Cou7ajbmo=
+ golang.org/x/term v0.0.0-20210927222741-03fcf44c2211/go.mod h1:jbD1KX2456YbFQfuXm/mYQcufACuNUgVhRMnK/tPxf8=
+ golang.org/x/term v0.5.0/go.mod h1:jMB1sMXY+tzblOD4FWmEbocvup2/aLOaQEp7JmGp78k=
+ golang.org/x/text v0.3.0/go.mod h1:NqM8EUOU14njkJ3fqMW+pc6Ldnwhi/IjpwHt7yyuwOQ=
+ golang.org/x/text v0.3.3/go.mod h1:5Zoc/QRtKVWzQhOtBMvqHzDpF6irO9z98xDceosuGiQ=
+-golang.org/x/text v0.3.6/go.mod h1:5Zoc/QRtKVWzQhOtBMvqHzDpF6irO9z98xDceosuGiQ=
+ golang.org/x/text v0.3.7/go.mod h1:u+2+/6zg+i71rQMx5EYifcz6MCKuco9NR6JIITiCfzQ=
+ golang.org/x/text v0.7.0/go.mod h1:mrYo+phRRbMaCq/xk9113O4dZlRixOauAjOtrjsXDZ8=
+-golang.org/x/text v0.38.0 h1:sXmwo9DwP3OK9EZ7PqAdaooSGozfl/3a6/xJcbzPRhE=
+-golang.org/x/text v0.38.0/go.mod h1:YXZt3QhHUKYT53r2lLKFIVi6Ao1jdzrTR/KQ09qyxF4=
++golang.org/x/text v0.42.0 h1:JbOZXgfeCPU9gacVtYliJqOhD+zhrEqK4LfdpmlUZqI=
++golang.org/x/text v0.42.0/go.mod h1:ojzP1Z+2QtioaF8DTtO8K5q7JWVVYwZKenzujK0Zd0E=
+ golang.org/x/tools v0.0.0-20180917221912-90fa682c2a6e/go.mod h1:n7NCudcB/nEzxVGmLbDWY5pfWTLqBcC2KZ6jyYvM4mQ=
+ golang.org/x/tools v0.0.0-20191119224855-298f0cb1881e/go.mod h1:b+2E5dAYhXwXZwtnZ6UAqBI28+e2cm9otk0dWdXHAEo=
+ golang.org/x/tools v0.1.12/go.mod h1:hNGJHUnrk76NpqgfD5Aqm5Crs+Hm0VOH/i9J2+nxYbc=
+-golang.org/x/tools v0.46.0 h1:7jTurBkPZu4moS/Uy4OQT1M+QBlsj3wejyZwsT8Z7rk=
+-golang.org/x/tools v0.46.0/go.mod h1:FrD85F8l+NWL+9XWBSyVSHO6Ne4jutsfIFba7AWQ5Ys=
++golang.org/x/tools v0.49.0 h1:3NI7VXzL9+1WZD52Dx2ttoPwD5DWrFGpl9mFZDlmisI=
++golang.org/x/tools v0.49.0/go.mod h1:SJNXV9DBKT0UbdttsQjbfJlAE/q+y36++zo3uL3N0Oo=
+ golang.org/x/xerrors v0.0.0-20190717185122-a985d3407aa7/go.mod h1:I/5z698sn9Ka8TeJc9MKroUUfqBBauWjQqLJ2OPfmY0=
+ google.golang.org/protobuf v1.36.11 h1:fV6ZwhNocDyBLK0dj+fg8ektcVegBBuEolpbTQyBNVE=
+ google.golang.org/protobuf v1.36.11/go.mod h1:HTf+CrKn2C3g5S8VImy6tdcUvCska2kB7j23XfzDpco=
+
+From cf22ef23135e961d84dea1a6d34fcf2d2d13d37f Mon Sep 17 00:00:00 2001
+From: jadercarvalhoPRM <jader.carvalho.ads@gmail.com>
+Date: Tue, 3 Nov 2026 14:01:46 -0300
+Subject: [PATCH 4/5] fix: pin patched Alpine runtime
+
+---
+ Dockerfile | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/Dockerfile b/Dockerfile
+index 36db21207..6132d56a3 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -1,6 +1,6 @@
+ FROM golang:1.26.10-alpine@sha256:a2012b4a1d1f9f7e9f44e0d39b805a901e856b1dd80b4e6ee4338db547050308 AS build
+ 
+-RUN apk update && apk add --no-cache git build-base libjpeg-turbo-dev libwebp-dev
++RUN apk add --no-cache git build-base libjpeg-turbo-dev libwebp-dev
+ 
+ WORKDIR /build
+ 
+@@ -17,10 +17,10 @@ COPY . .
+ ARG VERSION=dev
+ RUN CGO_ENABLED=1 go build -ldflags "-X main.version=${VERSION}" -o server ./cmd/evolution-go
+ 
+-FROM alpine:3.23.3@sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f2198c3f659 AS final
++FROM alpine:3.23.7@sha256:ff7f0c727dd796aa36787bfcd9a64bf35a6ce72a73451b3359fde849b6703d63 AS final
+ 
+ # poppler-utils provides pdftoppm, used to rasterize PDF page 1 for /send/media document thumbnails
+-RUN apk update && apk add --no-cache tzdata ffmpeg libjpeg-turbo libwebp poppler-utils
++RUN apk add --no-cache tzdata ffmpeg libjpeg-turbo libwebp poppler-utils
+ 
+ WORKDIR /app
+ 
+
+From 5802932eec45e216433555daf801679224b13b32 Mon Sep 17 00:00:00 2001
+From: jadercarvalhoPRM <jader.carvalho.ads@gmail.com>
+Date: Wed, 4 Nov 2026 16:01:20 -0300
+Subject: [PATCH 5/5] fix: serialize WhatsMeow client lifecycle
+
+---
+ .github/workflows/publish-auth-pool-ghcr.yml  |  15 +-
+ go.mod                                        |  10 +-
+ go.sum                                        |  24 +-
+ pkg/call/service/call_service.go              |   4 +-
+ pkg/chat/service/chat_service.go              |   4 +-
+ pkg/community/service/community_service.go    |   4 +-
+ pkg/events/webhook/webhook_producer.go        |  22 +-
+ pkg/events/webhook/webhook_producer_test.go   |  51 ++
+ pkg/group/service/group_service.go            |  10 +-
+ pkg/instance/service/instance_service.go      | 197 +----
+ pkg/instance/service/lifecycle_routes_test.go | 183 +++++
+ pkg/label/service/label_service.go            |   4 +-
+ pkg/message/service/message_service.go        |   8 +-
+ pkg/middleware/jid_validation_middleware.go   |  10 +-
+ pkg/newsletter/service/newsletter_service.go  |   6 +-
+ pkg/poll/service/poll_service.go              |  11 +-
+ .../service/connection_state_test.go          |  31 +
+ pkg/sendMessage/service/send_service.go       |  68 +-
+ pkg/storage/minio/media_storage.go            |   4 -
+ pkg/user/service/user_service.go              |   8 +-
+ pkg/utils/utils.go                            |   6 +-
+ .../service/reconnect_contract_test.go        | 499 +++++++++++++
+ pkg/whatsmeow/service/whatsmeow.go            | 672 ++++++++++++------
+ 23 files changed, 1349 insertions(+), 502 deletions(-)
+ create mode 100644 pkg/events/webhook/webhook_producer_test.go
+ create mode 100644 pkg/instance/service/lifecycle_routes_test.go
+ create mode 100644 pkg/sendMessage/service/connection_state_test.go
+ create mode 100644 pkg/whatsmeow/service/reconnect_contract_test.go
+
+diff --git a/.github/workflows/publish-auth-pool-ghcr.yml b/.github/workflows/publish-auth-pool-ghcr.yml
+index d79eb73df..77e9b29ae 100644
+--- a/.github/workflows/publish-auth-pool-ghcr.yml
++++ b/.github/workflows/publish-auth-pool-ghcr.yml
+@@ -1,4 +1,4 @@
+-name: Verify and publish WhatsApp 405 fix
++name: Verify and publish WhatsApp lifecycle fix
+ 
+ on:
+   pull_request:
+@@ -9,10 +9,11 @@ on:
+     branches:
+       - codex/fix-auth-pool
+       - codex/fix-wa-version-auth-pool
++      - codex/fix-whatsmeow-lifecycle
+   workflow_dispatch:
+ 
+ concurrency:
+-  group: publish-fix-405-${{ github.ref }}
++  group: publish-lifecycle-${{ github.ref }}
+   cancel-in-progress: true
+ 
+ permissions:
+@@ -20,7 +21,7 @@ permissions:
+ 
+ env:
+   IMAGE_NAME: ghcr.io/jadercarvalhoprm/evolution-go-auth-pool
+-  ROLLBACK_IMAGE: ghcr.io/jadercarvalhoprm/evolution-go-auth-pool@sha256:645e5bde7f97e3928f5a7d94cd8c37cbf79de7a595be684e26fb76db2d5a35fa
++  ROLLBACK_IMAGE: ghcr.io/jadercarvalhoprm/evolution-go-auth-pool:fix-405@sha256:1cfec91d7ff9ed2627cc5e50dbb89a0937d7029e79609653d0caaf9563bea8fb
+ 
+ jobs:
+   verify-go:
+@@ -87,7 +88,7 @@ jobs:
+           load: true
+           push: false
+           tags: local/evolution-go:e2e-${{ github.sha }}
+-          build-args: VERSION=0.7.2-authpool-fix405-${{ github.sha }}
++          build-args: VERSION=0.7.2-authpool-fix405-lifecycle-${{ github.sha }}
+           cache-from: type=gha
+           cache-to: type=gha,mode=max
+ 
+@@ -150,9 +151,9 @@ jobs:
+           images: ${{ env.IMAGE_NAME }}
+           tags: |
+             type=sha,format=short,prefix=sha-
+-            type=raw,value=fix-405
++            type=raw,value=fix-lifecycle
+           labels: |
+-            org.opencontainers.image.title=Evolution Go auth pool with WhatsApp 405 fix
++            org.opencontainers.image.title=Evolution Go auth pool with WhatsApp lifecycle fix
+             org.opencontainers.image.source=https://github.com/jadercarvalhoPRM/evolution-go
+             org.opencontainers.image.revision=${{ github.sha }}
+ 
+@@ -166,7 +167,7 @@ jobs:
+           push: true
+           tags: ${{ steps.meta.outputs.tags }}
+           labels: ${{ steps.meta.outputs.labels }}
+-          build-args: VERSION=0.7.2-authpool-fix405-${{ github.sha }}
++          build-args: VERSION=0.7.2-authpool-fix405-lifecycle-${{ github.sha }}
+           cache-from: type=gha
+           cache-to: type=gha,mode=max
+           provenance: mode=max
+diff --git a/go.mod b/go.mod
+index caae885ff..f004b22fe 100644
+--- a/go.mod
++++ b/go.mod
+@@ -23,11 +23,11 @@ require (
+ 	github.com/swaggo/gin-swagger v1.6.0
+ 	github.com/swaggo/swag v1.16.3
+ 	github.com/vincent-petithory/dataurl v1.0.0
+-	go.mau.fi/whatsmeow v0.0.0-20260630180629-b572e5bcb92b
+-	golang.org/x/exp v0.0.0-20260611194520-c48552f49976
++	go.mau.fi/whatsmeow v0.0.0-20260904121843-28bfe537ea6a
++	golang.org/x/exp v0.0.0-20260813180055-c1d0aacb2297
+ 	golang.org/x/image v0.45.0
+ 	golang.org/x/net v0.60.0
+-	google.golang.org/protobuf v1.36.11
++	google.golang.org/protobuf v1.36.12
+ 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
+ 	gorm.io/driver/postgres v1.5.9
+ 	gorm.io/gorm v1.25.10
+@@ -77,7 +77,7 @@ require (
+ 	github.com/nats-io/nuid v1.0.1 // indirect
+ 	github.com/ncruces/go-strftime v0.1.9 // indirect
+ 	github.com/pelletier/go-toml/v2 v2.2.3 // indirect
+-	github.com/petermattis/goid v0.0.0-20260330135022-df67b199bc81 // indirect
++	github.com/petermattis/goid v0.0.0-20260816044145-ed329add6b1b // indirect
+ 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+ 	github.com/rogpeppe/go-internal v1.12.0 // indirect
+ 	github.com/rs/xid v1.6.0 // indirect
+@@ -86,7 +86,7 @@ require (
+ 	github.com/ugorji/go/codec v1.2.12 // indirect
+ 	github.com/vektah/gqlparser/v2 v2.5.27 // indirect
+ 	go.mau.fi/libsignal v0.2.2 // indirect
+-	go.mau.fi/util v0.9.10 // indirect
++	go.mau.fi/util v0.10.1-0.20260820140024-eb612d936fde // indirect
+ 	golang.org/x/arch v0.10.0 // indirect
+ 	golang.org/x/crypto v0.57.0 // indirect
+ 	golang.org/x/sync v0.23.0 // indirect
+diff --git a/go.sum b/go.sum
+index b817546ce..80200fe0b 100644
+--- a/go.sum
++++ b/go.sum
+@@ -111,8 +111,8 @@ github.com/mattn/go-colorable v0.1.14 h1:9A9LHSqF/7dyVVX6g0U9cwm9pG3kP9gSzcuIPHP
+ github.com/mattn/go-colorable v0.1.14/go.mod h1:6LmQG8QLFO4G5z1gPvYEzlUgJ2wF+stgPZH1UqBm1s8=
+ github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWEY=
+ github.com/mattn/go-isatty v0.0.20/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
+-github.com/mattn/go-sqlite3 v1.14.45 h1:6KA/spDguL3KV8rnybG7ezSaE4SeMR3KC9VbUoAQaIk=
+-github.com/mattn/go-sqlite3 v1.14.45/go.mod h1:pjEuOr8IwzLJP2MfGeTb0A35jauH+C2kbHKBr7yXKVQ=
++github.com/mattn/go-sqlite3 v1.14.49 h1:B8jBHC3xhxZgxztrgruTuLucebnULQnx4W7cF7SAE9w=
++github.com/mattn/go-sqlite3 v1.14.49/go.mod h1:6JTjA44L93a0QCyJef5YvlPoKXntQPjzWv5gtm9sB6w=
+ github.com/minio/md5-simd v1.1.2 h1:Gdi1DZK69+ZVMoNHRXJyNcxrMA4dSxoYHZSQbirFg34=
+ github.com/minio/md5-simd v1.1.2/go.mod h1:MzdKDxYpY2BT9XQFocsiZf/NKVtR7nkE4RoEpN+20RM=
+ github.com/minio/minio-go/v7 v7.0.80 h1:2mdUHXEykRdY/BigLt3Iuu1otL0JTogT0Nmltg0wujk=
+@@ -134,8 +134,8 @@ github.com/patrickmn/go-cache v2.1.0+incompatible h1:HRMgzkcYKYpi3C8ajMPV8OFXaaR
+ github.com/patrickmn/go-cache v2.1.0+incompatible/go.mod h1:3Qf8kWWT7OJRJbdiICTKqZju1ZixQ/KpMGzzAfe6+WQ=
+ github.com/pelletier/go-toml/v2 v2.2.3 h1:YmeHyLY8mFWbdkNWwpr+qIL2bEqT0o95WSdkNHvL12M=
+ github.com/pelletier/go-toml/v2 v2.2.3/go.mod h1:MfCQTFTvCcUyyvvwm1+G6H/jORL20Xlb6rzQu9GuUkc=
+-github.com/petermattis/goid v0.0.0-20260330135022-df67b199bc81 h1:WDsQxOJDy0N1VRAjXLpi8sCEZRSGarLWQevDxpTBRrM=
+-github.com/petermattis/goid v0.0.0-20260330135022-df67b199bc81/go.mod h1:pxMtw7cyUw6B2bRH0ZBANSPg+AoSud1I1iyJHI69jH4=
++github.com/petermattis/goid v0.0.0-20260816044145-ed329add6b1b h1:sS7HLzwS+dO+gxATgQfeZDEdUZe2pKAB3nGoUwP5zU0=
++github.com/petermattis/goid v0.0.0-20260816044145-ed329add6b1b/go.mod h1:pxMtw7cyUw6B2bRH0ZBANSPg+AoSud1I1iyJHI69jH4=
+ github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
+ github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
+ github.com/rabbitmq/amqp091-go v1.13.0 h1:L8NA1WtF76C6KA3LAoufjfLgbist/If1UQYcsOjtxXA=
+@@ -179,10 +179,10 @@ github.com/vincent-petithory/dataurl v1.0.0/go.mod h1:FHafX5vmDzyP+1CQATJn7WFKc9
+ github.com/yuin/goldmark v1.4.13/go.mod h1:6yULJ656Px+3vBD8DxQVa3kxgyrAnzto9xy5taEt/CY=
+ go.mau.fi/libsignal v0.2.2 h1:QV+XdzQkm3x3aSG7FcqfGSZuFXz83pRZPBFaPygHbOU=
+ go.mau.fi/libsignal v0.2.2/go.mod h1:CRlIQg2J8uYTfDFvNoO8/KcZjs5cey0vbc6oj/bssY0=
+-go.mau.fi/util v0.9.10 h1:wzvz5iDHyqDXB8vgisD4d3SzucLXNM3iNY+1O1RoHtg=
+-go.mau.fi/util v0.9.10/go.mod h1:YQOxySn+ZE3qSYqNxvyX7Yi3suA8YK17PS6QqBREW7A=
+-go.mau.fi/whatsmeow v0.0.0-20260630180629-b572e5bcb92b h1:ZUk1ErarDNpnbosXR/MeOz2gkqA4S1bh8zjaSRj7N+Y=
+-go.mau.fi/whatsmeow v0.0.0-20260630180629-b572e5bcb92b/go.mod h1:9dmNTYZ/1pHjPw/bz+azBsGjAkcrZbqzMrKcvG5bJ8U=
++go.mau.fi/util v0.10.1-0.20260820140024-eb612d936fde h1:eMHY9dMDkNuDMWhfTbMZHbbsxj7G6mfujjKei1HaFQM=
++go.mau.fi/util v0.10.1-0.20260820140024-eb612d936fde/go.mod h1:z0ZZNt4hq3FZbUKnunexE/QscCx7VkLvQSvtggc/aE8=
++go.mau.fi/whatsmeow v0.0.0-20260904121843-28bfe537ea6a h1:VQgow0KuoIspGo+sAdl8E5f1j1B7OSra7oquz9A7sgE=
++go.mau.fi/whatsmeow v0.0.0-20260904121843-28bfe537ea6a/go.mod h1:aMd13H2xFFGH9cskcvxo4Aae+TmyFN38yw+HvsrpwVg=
+ go.uber.org/goleak v1.3.0 h1:2K3zAYmnTNqV73imy9J1T3WC+gmCePx2hEGkimedGto=
+ go.uber.org/goleak v1.3.0/go.mod h1:CoHD4mav9JJNrW/WLlf7HGZPjdw8EucARQHekz1X6bE=
+ golang.org/x/arch v0.10.0 h1:S3huipmSclq3PJMNe76NGwkBR504WFkQ5dhzWzP8ZW8=
+@@ -191,8 +191,8 @@ golang.org/x/crypto v0.0.0-20190308221718-c2843e01d9a2/go.mod h1:djNgcEr1/C05ACk
+ golang.org/x/crypto v0.0.0-20210921155107-089bfa567519/go.mod h1:GvvjBRRGRdwPK5ydBHafDWAxML/pGHZbMvKqRZ5+Abc=
+ golang.org/x/crypto v0.57.0 h1:3ZVCjf8Ggz7zneR/EHRVx68Ctf+2pmIMP2UFhh9cC6M=
+ golang.org/x/crypto v0.57.0/go.mod h1:Fdz0i5U6CoizGwLda9DttjSk6qlZo25zYNtR+ycvuZA=
+-golang.org/x/exp v0.0.0-20260611194520-c48552f49976 h1:X8Hz2ImujgbmetVuW+w2YkyZChE3cBpZi2P158rTG9M=
+-golang.org/x/exp v0.0.0-20260611194520-c48552f49976/go.mod h1:vnf4pv9iKZXY58sQE1L86zmNWJ4159e1RkcWiLCkeEY=
++golang.org/x/exp v0.0.0-20260813180055-c1d0aacb2297 h1:YXnL44eJ77R+ji4/ooy8UsXIhz+lbi2Qgdlc8iRN0gY=
++golang.org/x/exp v0.0.0-20260813180055-c1d0aacb2297/go.mod h1:Mkmymgv+uMpSQ/XxJ/7GpdrdYoqm3u72jEbpCLiJmNk=
+ golang.org/x/image v0.45.0 h1:FMb1nTbH5H9vF55SriQHgFw5GnNL9Jg6L25BwXKzhB0=
+ golang.org/x/image v0.45.0/go.mod h1:n62x/7RqlwXDvGsSU4u6IUTUf6KghUZ9Bt7cG/T9Fx4=
+ golang.org/x/mod v0.6.0-dev.0.20220419223038-86c51ed26bb4/go.mod h1:jJ57K6gSWd91VN4djpZkiMVwK6gcyfeH4XE8wZrZaV4=
+@@ -232,8 +232,8 @@ golang.org/x/tools v0.1.12/go.mod h1:hNGJHUnrk76NpqgfD5Aqm5Crs+Hm0VOH/i9J2+nxYbc
+ golang.org/x/tools v0.49.0 h1:3NI7VXzL9+1WZD52Dx2ttoPwD5DWrFGpl9mFZDlmisI=
+ golang.org/x/tools v0.49.0/go.mod h1:SJNXV9DBKT0UbdttsQjbfJlAE/q+y36++zo3uL3N0Oo=
+ golang.org/x/xerrors v0.0.0-20190717185122-a985d3407aa7/go.mod h1:I/5z698sn9Ka8TeJc9MKroUUfqBBauWjQqLJ2OPfmY0=
+-google.golang.org/protobuf v1.36.11 h1:fV6ZwhNocDyBLK0dj+fg8ektcVegBBuEolpbTQyBNVE=
+-google.golang.org/protobuf v1.36.11/go.mod h1:HTf+CrKn2C3g5S8VImy6tdcUvCska2kB7j23XfzDpco=
++google.golang.org/protobuf v1.36.12 h1:pJOKDDOyeXErUroCihFAd5LQuwXBSpVnKGrj5o/fwxc=
++google.golang.org/protobuf v1.36.12/go.mod h1:HTf+CrKn2C3g5S8VImy6tdcUvCska2kB7j23XfzDpco=
+ gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
+ gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c h1:Hei/4ADfdWqJk1ZMxUNpqntNwaWcugrBjAiHlqqRiVk=
+ gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c/go.mod h1:JHkPIbrfpd72SG/EVd6muEfDQjcINNoR0C8j2r3qZ4Q=
+diff --git a/pkg/call/service/call_service.go b/pkg/call/service/call_service.go
+index 3c14a948c..64b2d24ba 100644
+--- a/pkg/call/service/call_service.go
++++ b/pkg/call/service/call_service.go
+@@ -29,7 +29,7 @@ type RejectCallStruct struct {
+ }
+ 
+ func (c *callService) ensureClientConnected(instanceId string) (*whatsmeow.Client, error) {
+-	client := c.clientPointer[instanceId]
++	client := c.whatsmeowService.GetClient(instanceId)
+ 	c.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Checking client connection status - Client exists: %v", instanceId, client != nil)
+ 
+ 	if client == nil {
+@@ -43,7 +43,7 @@ func (c *callService) ensureClientConnected(instanceId string) (*whatsmeow.Clien
+ 		c.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Instance started, waiting 2 seconds...", instanceId)
+ 		time.Sleep(2 * time.Second)
+ 
+-		client = c.clientPointer[instanceId]
++		client = c.whatsmeowService.GetClient(instanceId)
+ 		c.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Checking new client - Exists: %v, Connected: %v",
+ 			instanceId,
+ 			client != nil,
+diff --git a/pkg/chat/service/chat_service.go b/pkg/chat/service/chat_service.go
+index c4eda9d7b..e2a21f020 100644
+--- a/pkg/chat/service/chat_service.go
++++ b/pkg/chat/service/chat_service.go
+@@ -40,7 +40,7 @@ type HistorySyncRequestStruct struct {
+ }
+ 
+ func (c *chatService) ensureClientConnected(instanceId string) (*whatsmeow.Client, error) {
+-	client := c.clientPointer[instanceId]
++	client := c.whatsmeowService.GetClient(instanceId)
+ 	c.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Checking client connection status - Client exists: %v", instanceId, client != nil)
+ 
+ 	if client == nil {
+@@ -54,7 +54,7 @@ func (c *chatService) ensureClientConnected(instanceId string) (*whatsmeow.Clien
+ 		c.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Instance started, waiting 2 seconds...", instanceId)
+ 		time.Sleep(2 * time.Second)
+ 
+-		client = c.clientPointer[instanceId]
++		client = c.whatsmeowService.GetClient(instanceId)
+ 		c.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Checking new client - Exists: %v, Connected: %v",
+ 			instanceId,
+ 			client != nil,
+diff --git a/pkg/community/service/community_service.go b/pkg/community/service/community_service.go
+index aded6109c..04b46e93a 100644
+--- a/pkg/community/service/community_service.go
++++ b/pkg/community/service/community_service.go
+@@ -36,7 +36,7 @@ type AddParticipantStruct struct {
+ }
+ 
+ func (c *communityService) ensureClientConnected(instanceId string) (*whatsmeow.Client, error) {
+-	client := c.clientPointer[instanceId]
++	client := c.whatsmeowService.GetClient(instanceId)
+ 	c.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Checking client connection status - Client exists: %v", instanceId, client != nil)
+ 
+ 	if client == nil {
+@@ -50,7 +50,7 @@ func (c *communityService) ensureClientConnected(instanceId string) (*whatsmeow.
+ 		c.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Instance started, waiting 2 seconds...", instanceId)
+ 		time.Sleep(2 * time.Second)
+ 
+-		client = c.clientPointer[instanceId]
++		client = c.whatsmeowService.GetClient(instanceId)
+ 		c.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Checking new client - Exists: %v, Connected: %v",
+ 			instanceId,
+ 			client != nil,
+diff --git a/pkg/events/webhook/webhook_producer.go b/pkg/events/webhook/webhook_producer.go
+index c78bbf5db..c42fc33cd 100644
+--- a/pkg/events/webhook/webhook_producer.go
++++ b/pkg/events/webhook/webhook_producer.go
+@@ -52,22 +52,22 @@ func (p *webhookProducer) Produce(
+ 
+ func (p *webhookProducer) sendWebhookWithRetry(url string, body []byte, maxRetries int, retryInterval time.Duration, userID string) {
+ 	for i := 0; i < maxRetries; i++ {
+-		err, responseBody, statusCode := p.sendWebhook(url, body, userID)
++		err, statusCode := p.sendWebhook(url, body, userID)
+ 		if err == nil {
+-			p.loggerWrapper.GetLogger(userID).LogInfo("[%s] webhook sent successfully - url: %s, status: %d, response: %s", userID, url, statusCode, string(responseBody))
++			p.loggerWrapper.GetLogger(userID).LogInfo("[%s] webhook sent successfully - status: %d", userID, statusCode)
+ 			return
+ 		}
+-		p.loggerWrapper.GetLogger(userID).LogWarn("[%s] webhook failed - url: %s, attempt: %d, error: %v", userID, url, i+1, err)
++		p.loggerWrapper.GetLogger(userID).LogWarn("[%s] webhook failed - attempt: %d, status: %d", userID, i+1, statusCode)
+ 
+ 		time.Sleep(retryInterval)
+ 	}
+-	p.loggerWrapper.GetLogger(userID).LogError("[%s] webhook failed after maximum retries - url: %s", userID, url)
++	p.loggerWrapper.GetLogger(userID).LogError("[%s] webhook failed after maximum retries", userID)
+ }
+ 
+-func (p *webhookProducer) sendWebhook(url string, body []byte, userID string) (error, []byte, int) {
++func (p *webhookProducer) sendWebhook(url string, body []byte, userID string) (error, int) {
+ 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
+ 	if err != nil {
+-		return err, nil, 0
++		return err, 0
+ 	}
+ 
+ 	req.Header.Set("Content-Type", "application/json")
+@@ -75,20 +75,20 @@ func (p *webhookProducer) sendWebhook(url string, body []byte, userID string) (e
+ 	client := &http.Client{}
+ 	resp, err := client.Do(req)
+ 	if err != nil {
+-		return err, nil, 0
++		return err, 0
+ 	}
+ 	defer resp.Body.Close()
+ 
+-	responseBody, err := io.ReadAll(resp.Body)
++	_, err = io.Copy(io.Discard, resp.Body)
+ 	if err != nil {
+-		return fmt.Errorf("erro ao ler resposta: %v", err), nil, 0
++		return fmt.Errorf("erro ao ler resposta: %v", err), resp.StatusCode
+ 	}
+ 
+ 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+-		return errors.New("received non-2xx response: " + resp.Status), responseBody, resp.StatusCode
++		return errors.New("received non-2xx response: " + resp.Status), resp.StatusCode
+ 	}
+ 
+-	return nil, responseBody, resp.StatusCode
++	return nil, resp.StatusCode
+ }
+ 
+ // CreateGlobalQueues não faz nada para webhook producer
+diff --git a/pkg/events/webhook/webhook_producer_test.go b/pkg/events/webhook/webhook_producer_test.go
+new file mode 100644
+index 000000000..05e67d9ab
+--- /dev/null
++++ b/pkg/events/webhook/webhook_producer_test.go
+@@ -0,0 +1,51 @@
++package webhook_producer
++
++import (
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++
++	"github.com/evolution-foundation/evolution-go/pkg/config"
++	logger_wrapper "github.com/evolution-foundation/evolution-go/pkg/logger"
++)
++
++func TestWebhookLogsDoNotExposeURLQueryOrResponseBody(t *testing.T) {
++	const secret = "SECRET_URL_TOKEN_DO_NOT_LOG"
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
++		_, _ = w.Write([]byte("response-" + secret))
++	}))
++	defer server.Close()
++
++	logDir := t.TempDir()
++	producer := &webhookProducer{loggerWrapper: logger_wrapper.NewLoggerManager(&config.Config{
++		LogDirectory: logDir,
++	})}
++
++	originalStdout := os.Stdout
++	readPipe, writePipe, err := os.Pipe()
++	if err != nil {
++		t.Fatal(err)
++	}
++	os.Stdout = writePipe
++	producer.sendWebhookWithRetry(server.URL+"/hook?token="+secret, []byte(`{"event":"test"}`), 1, 0, "instance-production-trace")
++	_ = writePipe.Close()
++	os.Stdout = originalStdout
++	stdout, err := io.ReadAll(readPipe)
++	if err != nil {
++		t.Fatal(err)
++	}
++	_ = readPipe.Close()
++
++	fileLog, err := os.ReadFile(filepath.Join(logDir, "instance-production-trace", "instance.log"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	combined := string(stdout) + string(fileLog)
++	if strings.Contains(combined, secret) || strings.Contains(combined, "?token=") {
++		t.Fatalf("webhook secret leaked in logs: %s", combined)
++	}
++}
+diff --git a/pkg/group/service/group_service.go b/pkg/group/service/group_service.go
+index b99e10bbc..80c2ce390 100644
+--- a/pkg/group/service/group_service.go
++++ b/pkg/group/service/group_service.go
+@@ -117,7 +117,7 @@ type UpdateGroupRequestParticipantsStruct struct {
+ }
+ 
+ func (g *groupService) ensureClientConnected(instanceId string) (*whatsmeow.Client, error) {
+-	client := g.clientPointer[instanceId]
++	client := g.whatsmeowService.GetClient(instanceId)
+ 	g.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Checking client connection status - Client exists: %v", instanceId, client != nil)
+ 
+ 	if client == nil {
+@@ -131,7 +131,7 @@ func (g *groupService) ensureClientConnected(instanceId string) (*whatsmeow.Clie
+ 		g.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Instance started, waiting 2 seconds...", instanceId)
+ 		time.Sleep(2 * time.Second)
+ 
+-		client = g.clientPointer[instanceId]
++		client = g.whatsmeowService.GetClient(instanceId)
+ 		g.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Checking new client - Exists: %v, Connected: %v",
+ 			instanceId,
+ 			client != nil,
+@@ -282,7 +282,7 @@ func (g *groupService) SetGroupName(data *SetGroupNameStruct, instance *instance
+ 		return errors.New("invalid group jid")
+ 	}
+ 
+-	g.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Attempting to set group name for %s", instance.Id, recipient.String())
++	g.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Attempting to set group name", instance.Id)
+ 
+ 	err = client.SetGroupName(context.Background(), recipient, data.Name)
+ 	if err != nil {
+@@ -310,7 +310,7 @@ func (g *groupService) SetGroupDescription(data *SetGroupDescriptionStruct, inst
+ 		return errors.New("invalid group jid")
+ 	}
+ 
+-	g.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Attempting to set group description for %s", instance.Id, recipient.String())
++	g.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Attempting to set group description", instance.Id)
+ 
+ 	// Use SetGroupTopic instead of SetGroupDescription (proper WhatsApp method)
+ 	// Empty strings for previousID and newID will be auto-filled by the library
+@@ -624,7 +624,7 @@ func (g *groupService) UpdateGroupRequestParticipants(data *UpdateGroupRequestPa
+ 	for _, participant := range data.Participants {
+ 		participantJID, ok := utils.ParseJID(participant)
+ 		if !ok {
+-			g.loggerWrapper.GetLogger(instance.Id).LogError("[%s] Error validating participant jid: %s", instance.Id, participant)
++			g.loggerWrapper.GetLogger(instance.Id).LogError("[%s] Error validating participant identity", instance.Id)
+ 			return nil, errors.New("invalid participant jid: " + participant)
+ 		}
+ 		participants = append(participants, participantJID)
+diff --git a/pkg/instance/service/instance_service.go b/pkg/instance/service/instance_service.go
+index fa43c946b..560fe672d 100644
+--- a/pkg/instance/service/instance_service.go
++++ b/pkg/instance/service/instance_service.go
+@@ -124,7 +124,7 @@ type ForceReconnectStruct struct {
+ 
+ func (i *instances) ensureClientConnected(instanceId string) (*whatsmeow.Client, error) {
+ 	logger := i.loggerWrapper.GetLogger(instanceId)
+-	client := i.clientPointer[instanceId]
++	client := i.whatsmeowService.GetClient(instanceId)
+ 	logger.LogInfo("[%s] Checking client connection status - Client exists: %v", instanceId, client != nil)
+ 
+ 	if client == nil {
+@@ -138,7 +138,7 @@ func (i *instances) ensureClientConnected(instanceId string) (*whatsmeow.Client,
+ 		logger.LogInfo("[%s] Instance started, waiting 2 seconds...", instanceId)
+ 		time.Sleep(2 * time.Second)
+ 
+-		client = i.clientPointer[instanceId]
++		client = i.whatsmeowService.GetClient(instanceId)
+ 		logger.LogInfo("[%s] Checking new client - Exists: %v, Connected: %v",
+ 			instanceId,
+ 			client != nil,
+@@ -242,7 +242,7 @@ func (i instances) Connect(data *ConnectStruct, instance *instance_model.Instanc
+ 	}
+ 
+ 	// Verifica se a instância já está rodando
+-	isInstanceRunning := i.clientPointer[instance.Id] != nil
++	isInstanceRunning := i.whatsmeowService.GetClient(instance.Id) != nil
+ 
+ 	// Sincroniza as configurações na instância em execução (se já estiver conectada)
+ 	err = i.whatsmeowService.UpdateInstanceSettings(instance.Id)
+@@ -258,133 +258,51 @@ func (i instances) Connect(data *ConnectStruct, instance *instance_model.Instanc
+ 	if !isInstanceRunning {
+ 		i.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Starting new client instance", instance.Id)
+ 
+-		i.killChannel[instance.Id] = make(chan bool)
+-
+-		clientData := &whatsmeow_service.ClientData{
+-			Instance:      instance,
+-			Subscriptions: subscribedEvents,
+-			Phone:         data.Phone,
+-			IsProxy:       false,
+-		}
+-
+-		if instance.Proxy != "" || i.config.ProxyHost != "" {
+-			var proxyConfig ProxyConfig
+-			err := json.Unmarshal([]byte(instance.Proxy), &proxyConfig)
+-			if err != nil {
+-				i.loggerWrapper.GetLogger(instance.Id).LogError("[%s] error unmarshalling proxy config: %v", instance.Id, err)
+-				return nil, "", "", err
+-			}
+-
+-			if proxyConfig.Host != "" || i.config.ProxyHost != "" {
+-				clientData.IsProxy = true
+-			}
++		if err := i.whatsmeowService.StartInstance(instance.Id); err != nil {
++			return nil, "", "", err
+ 		}
+-
+-		go i.whatsmeowService.StartClient(clientData)
+ 	} else {
+ 		i.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Instance already running, settings updated without restarting client", instance.Id)
+ 	}
+ 
+-	// logger.LogInfo("Waiting 1 seconds")
+-	// time.Sleep(1000 * time.Millisecond)
+-
+-	// if i.clientPointer[instance.Id] != nil {
+-	// 	if !i.clientPointer[instance.Id].IsConnected() {
+-	// 		return instance, "", "", fmt.Errorf("failed to connect")
+-	// 	}
+-	// } else {
+-	// 	return instance, "", "", fmt.Errorf("failed to connect")
+-	// }
+-
+ 	return instance, instance.Jid, eventString, nil
+ }
+ 
+ func (i instances) Reconnect(instance *instance_model.Instance) error {
+-	_, err := i.ensureClientConnected(instance.Id)
+-	if err != nil {
+-		return err
+-	}
+-
+ 	return i.whatsmeowService.ReconnectClient(instance.Id)
+ }
+ 
+ func (i instances) Disconnect(instance *instance_model.Instance) (*instance_model.Instance, error) {
+-	client, err := i.ensureClientConnected(instance.Id)
+-	if err != nil {
++	if err := i.whatsmeowService.StopInstance(instance.Id, instance.Token, false); err != nil {
+ 		return instance, err
+ 	}
+ 
+-	if client.IsConnected() {
+-		if client.IsLoggedIn() {
+-			i.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Disconnection successful", instance.Id)
+-			i.killChannel[instance.Id] <- true
+-
+-			instance.Events = ""
+-
+-			err := i.instanceRepository.Update(instance)
+-			if err != nil {
+-				return instance, err
+-			}
+-
+-			return instance, nil
+-		}
++	instance.Connected = false
++	instance.Events = ""
++	if err := i.instanceRepository.Update(instance); err != nil {
++		return instance, err
+ 	}
+ 
+-	i.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Ignoring disconnect as it was not connected", instance.Id)
++	i.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Disconnection successful", instance.Id)
+ 	return instance, nil
+ }
+ 
+ func (i instances) Logout(instance *instance_model.Instance) (*instance_model.Instance, error) {
+-	client, err := i.ensureClientConnected(instance.Id)
+-	if err != nil {
++	if err := i.whatsmeowService.StopInstance(instance.Id, instance.Token, true); err != nil {
+ 		return instance, err
+ 	}
+ 
+-	if client.IsLoggedIn() && client.IsConnected() {
+-		err := client.Logout(context.Background())
+-		if err != nil {
+-			return instance, err
+-		}
+-
+-		instance.Connected = false
+-		err = i.instanceRepository.Update(instance)
+-		if err != nil {
+-			return instance, err
+-		}
+-
+-		select {
+-		case i.killChannel[instance.Id] <- true:
+-		case <-time.After(5 * time.Second):
+-		}
+-
+-		delete(i.clientPointer, instance.Id)
+-		delete(i.killChannel, instance.Id)
+-
+-		i.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Logout successful", instance.Id)
+-		return instance, nil
+-	}
+-
+-	if client.IsConnected() {
+-		client.Disconnect()
+-
+-		select {
+-		case i.killChannel[instance.Id] <- true:
+-		case <-time.After(5 * time.Second):
+-		}
+-
+-		delete(i.clientPointer, instance.Id)
+-		delete(i.killChannel, instance.Id)
+-
+-		i.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Disconnection successful", instance.Id)
+-		return instance, nil
++	instance.Connected = false
++	if err := i.instanceRepository.Update(instance); err != nil {
++		return instance, err
+ 	}
+ 
+-	i.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Ignoring logout as it was not connected", instance.Id)
+-	return instance, fmt.Errorf("ignoring logout as it was not connected")
++	i.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Logout successful", instance.Id)
++	return instance, nil
+ }
+ 
+ func (i instances) Status(instance *instance_model.Instance) (*StatusStruct, error) {
+-	client := i.clientPointer[instance.Id]
++	client := i.whatsmeowService.GetClient(instance.Id)
+ 
+ 	if client == nil {
+ 		return &StatusStruct{
+@@ -413,7 +331,7 @@ func (i instances) Status(instance *instance_model.Instance) (*StatusStruct, err
+ 
+ func (i instances) GetQr(instance *instance_model.Instance) (*QrcodeStruct, error) {
+ 	logger := i.loggerWrapper.GetLogger(instance.Id)
+-	client := i.clientPointer[instance.Id]
++	client := i.whatsmeowService.GetClient(instance.Id)
+ 
+ 	// Se não há cliente ou o cliente está logado, precisamos iniciar um novo cliente
+ 	if client == nil || client.IsLoggedIn() {
+@@ -435,7 +353,7 @@ func (i instances) GetQr(instance *instance_model.Instance) (*QrcodeStruct, erro
+ 		time.Sleep(3 * time.Second)
+ 
+ 		// Verificar novamente se há cliente
+-		client = i.clientPointer[instance.Id]
++		client = i.whatsmeowService.GetClient(instance.Id)
+ 		if client != nil && client.IsLoggedIn() {
+ 			return nil, fmt.Errorf("session already logged in")
+ 		}
+@@ -511,7 +429,7 @@ func buildPasskeyOpenURL(token string) string {
+ 
+ func (i instances) Pair(data *PairStruct, instance *instance_model.Instance) (*PairReturnStruct, error) {
+ 	logger := i.loggerWrapper.GetLogger(instance.Id)
+-	client := i.clientPointer[instance.Id]
++	client := i.whatsmeowService.GetClient(instance.Id)
+ 
+ 	if client == nil || !client.IsConnected() {
+ 		if client != nil && client.IsLoggedIn() {
+@@ -525,7 +443,7 @@ func (i instances) Pair(data *PairStruct, instance *instance_model.Instance) (*P
+ 		// Wait for the WA websocket connection and initial QR generation to establish.
+ 		// PairPhone must be called after the QR event is received per whatsmeow docs.
+ 		time.Sleep(3 * time.Second)
+-		client = i.clientPointer[instance.Id]
++		client = i.whatsmeowService.GetClient(instance.Id)
+ 		if client == nil {
+ 			return nil, fmt.Errorf("failed to initialize client for pairing")
+ 		}
+@@ -551,7 +469,7 @@ func (i instances) GetAll() ([]*instance_model.Instance, error) {
+ 	}
+ 
+ 	for _, instance := range instances {
+-		if client := i.clientPointer[instance.Id]; client != nil {
++		if client := i.whatsmeowService.GetClient(instance.Id); client != nil {
+ 			instance.Connected = client.IsLoggedIn()
+ 		} else {
+ 			instance.Connected = false
+@@ -570,7 +488,7 @@ func (i instances) Info(instanceId string) (*instance_model.Instance, error) {
+ 	}
+ 
+ 	// Atualiza o status connected com base no estado real do cliente
+-	if client := i.clientPointer[instance.Id]; client != nil {
++	if client := i.whatsmeowService.GetClient(instance.Id); client != nil {
+ 		instance.Connected = client.IsLoggedIn()
+ 	} else {
+ 		instance.Connected = false
+@@ -587,22 +505,7 @@ func (i instances) Delete(id string) error {
+ 		return err
+ 	}
+ 
+-	if i.clientPointer[instance.Id] != nil && i.clientPointer[instance.Id].IsConnected() {
+-		if i.clientPointer[instance.Id].IsLoggedIn() {
+-			i.clientPointer[instance.Id].Logout(context.Background())
+-		}
+-		i.clientPointer[instance.Id].Disconnect()
+-	}
+-
+-	// Limpar todos os recursos da instância antes de deletar
+-	delete(i.clientPointer, instance.Id)
+-	if i.killChannel[instance.Id] != nil {
+-		close(i.killChannel[instance.Id])
+-		delete(i.killChannel, instance.Id)
+-	}
+-
+-	// Limpar cache via whatsmeow service
+-	err = i.whatsmeowService.ClearInstanceCache(instance.Id, instance.Token)
++	err = i.whatsmeowService.StopInstance(instance.Id, instance.Token, true)
+ 	if err != nil {
+ 		i.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Failed to clear instance cache: %v", instance.Id, err)
+ 	}
+@@ -697,7 +600,7 @@ func (i instances) RemoveProxy(id string) error {
+ }
+ 
+ func (i instances) ForceReconnect(instanceId string, number string) error {
+-	if i.clientPointer[instanceId].IsConnected() && i.clientPointer[instanceId].IsLoggedIn() {
++	if client := i.whatsmeowService.GetClient(instanceId); client != nil && client.IsConnected() && client.IsLoggedIn() {
+ 		return fmt.Errorf("client already connected")
+ 	}
+ 
+@@ -706,58 +609,18 @@ func (i instances) ForceReconnect(instanceId string, number string) error {
+ 		return err
+ 	}
+ 
+-	instance, err := i.instanceRepository.GetInstanceByID(instanceId)
+-	if err != nil {
++	if err := i.whatsmeowService.ReconnectClient(instanceId); err != nil {
+ 		return err
+ 	}
+ 
+-	subscribedEvents := strings.Split(instance.Events, ",")
+-
+-	i.killChannel[instance.Id] = make(chan bool)
+-
+-	clientData := &whatsmeow_service.ClientData{
+-		Instance:      instance,
+-		Subscriptions: subscribedEvents,
+-		Phone:         "",
+-		IsProxy:       false,
+-	}
+-
+-	if instance.Proxy != "" || i.config.ProxyHost != "" {
+-		var proxyConfig ProxyConfig
+-		err := json.Unmarshal([]byte(instance.Proxy), &proxyConfig)
+-		if err != nil {
+-			i.loggerWrapper.GetLogger(instance.Id).LogError("[%s] error unmarshalling proxy config: %v", instance.Id, err)
+-			return err
+-		}
+-
+-		if proxyConfig.Host != "" || i.config.ProxyHost != "" {
+-			clientData.IsProxy = true
+-		}
+-	}
+-
+-	if i.clientPointer[instance.Id] != nil {
+-		client := i.clientPointer[instance.Id]
+-		client.Disconnect()
+-
+-		select {
+-		case i.killChannel[instance.Id] <- true:
+-		case <-time.After(5 * time.Second):
+-		}
+-
+-		delete(i.clientPointer, instance.Id)
+-		delete(i.killChannel, instance.Id)
+-	}
+-
+-	go i.whatsmeowService.StartClient(clientData)
+-
+ 	time.Sleep(2 * time.Second)
+ 
+-	if i.clientPointer[instance.Id] != nil {
+-		if !i.clientPointer[instance.Id].IsConnected() {
++	if client := i.whatsmeowService.GetClient(instanceId); client != nil {
++		if !client.IsConnected() {
+ 			return fmt.Errorf("failed to connect")
+ 		}
+ 
+-		if !i.clientPointer[instance.Id].IsLoggedIn() {
++		if !client.IsLoggedIn() {
+ 			return fmt.Errorf("failed to login")
+ 		}
+ 	} else {
+diff --git a/pkg/instance/service/lifecycle_routes_test.go b/pkg/instance/service/lifecycle_routes_test.go
+new file mode 100644
+index 000000000..bc4620c10
+--- /dev/null
++++ b/pkg/instance/service/lifecycle_routes_test.go
+@@ -0,0 +1,183 @@
++package instance_service
++
++import (
++	"errors"
++	"sync"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"go.mau.fi/whatsmeow"
++	"go.mau.fi/whatsmeow/types"
++
++	"github.com/evolution-foundation/evolution-go/pkg/config"
++	instance_model "github.com/evolution-foundation/evolution-go/pkg/instance/model"
++	logger_wrapper "github.com/evolution-foundation/evolution-go/pkg/logger"
++	"github.com/evolution-foundation/evolution-go/pkg/passkey/ceremony"
++	poll_service "github.com/evolution-foundation/evolution-go/pkg/poll/service"
++)
++
++type lifecycleRouteRepository struct {
++	mu       sync.Mutex
++	instance instance_model.Instance
++}
++
++func (r *lifecycleRouteRepository) Create(instance instance_model.Instance) (*instance_model.Instance, error) {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	r.instance = instance
++	return &r.instance, nil
++}
++func (r *lifecycleRouteRepository) GetInstanceByID(string) (*instance_model.Instance, error) {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	copy := r.instance
++	return &copy, nil
++}
++func (r *lifecycleRouteRepository) GetConnectedInstanceByID(string) (*instance_model.Instance, error) {
++	return r.GetInstanceByID("")
++}
++func (r *lifecycleRouteRepository) GetInstanceByToken(string) (*instance_model.Instance, error) {
++	return r.GetInstanceByID("")
++}
++func (r *lifecycleRouteRepository) GetInstanceByName(string) (*instance_model.Instance, error) {
++	return r.GetInstanceByID("")
++}
++func (r *lifecycleRouteRepository) Update(instance *instance_model.Instance) error {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	r.instance = *instance
++	return nil
++}
++func (r *lifecycleRouteRepository) UpdateConnected(string, bool, string) error { return nil }
++func (r *lifecycleRouteRepository) UpdateQrcode(string, string) error          { return nil }
++func (r *lifecycleRouteRepository) UpdateProxy(string, string) error           { return nil }
++func (r *lifecycleRouteRepository) UpdateJid(string, string) error             { return nil }
++func (r *lifecycleRouteRepository) GetAllConnectedInstances() ([]*instance_model.Instance, error) {
++	return nil, nil
++}
++func (r *lifecycleRouteRepository) GetAllConnectedInstancesByClientName(string) ([]*instance_model.Instance, error) {
++	return nil, nil
++}
++func (r *lifecycleRouteRepository) GetAll(string) ([]*instance_model.Instance, error) {
++	return nil, nil
++}
++func (r *lifecycleRouteRepository) Delete(string) error { return nil }
++func (r *lifecycleRouteRepository) GetAdvancedSettings(string) (*instance_model.AdvancedSettings, error) {
++	return nil, nil
++}
++func (r *lifecycleRouteRepository) UpdateAdvancedSettings(string, *instance_model.AdvancedSettings) error {
++	return nil
++}
++
++type lifecycleRouteOwner struct {
++	opMu        sync.Mutex
++	active      atomic.Int32
++	maxActive   atomic.Int32
++	handlers    atomic.Int32
++	maxHandlers atomic.Int32
++	starts      atomic.Int32
++}
++
++func (o *lifecycleRouteOwner) run(start, stop bool) {
++	o.opMu.Lock()
++	defer o.opMu.Unlock()
++	active := o.active.Add(1)
++	if active > o.maxActive.Load() {
++		o.maxActive.Store(active)
++	}
++	defer o.active.Add(-1)
++
++	if start {
++		o.starts.Add(1)
++		if o.handlers.Load() == 0 {
++			o.handlers.Store(1)
++		}
++		if o.handlers.Load() > o.maxHandlers.Load() {
++			o.maxHandlers.Store(o.handlers.Load())
++		}
++	}
++	if stop {
++		o.handlers.Store(0)
++	}
++	time.Sleep(time.Millisecond)
++}
++
++func (o *lifecycleRouteOwner) ConnectOnStartup(string) {}
++func (o *lifecycleRouteOwner) StartInstance(string) error {
++	o.run(true, false)
++	return nil
++}
++func (o *lifecycleRouteOwner) ReconnectClient(string) error {
++	o.run(false, false)
++	return errors.New("forced reconnect stop after owner operation")
++}
++func (o *lifecycleRouteOwner) StopInstance(string, string, bool) error {
++	o.run(false, true)
++	return nil
++}
++func (o *lifecycleRouteOwner) ClearInstanceCache(string, string) error              { return nil }
++func (o *lifecycleRouteOwner) CallWebhook(*instance_model.Instance, string, []byte) {}
++func (o *lifecycleRouteOwner) SendToGlobalQueues(string, []byte, string)            {}
++func (o *lifecycleRouteOwner) ForceUpdateJid(string, string) error                  { return nil }
++func (o *lifecycleRouteOwner) UpdateInstanceSettings(string) error {
++	return errors.New("not running")
++}
++func (o *lifecycleRouteOwner) UpdateInstanceAdvancedSettings(string) error { return nil }
++func (o *lifecycleRouteOwner) GetPollService() poll_service.PollService    { return nil }
++func (o *lifecycleRouteOwner) PasskeyCeremonyStore() *ceremony.Store       { return nil }
++func (o *lifecycleRouteOwner) SubmitPasskeyResponse(string, *types.WebAuthnResponse) error {
++	return nil
++}
++func (o *lifecycleRouteOwner) ConfirmPasskey(string) error        { return nil }
++func (o *lifecycleRouteOwner) GetClient(string) *whatsmeow.Client { return nil }
++func (o *lifecycleRouteOwner) IsCurrentClient(string, *whatsmeow.Client) bool {
++	return true
++}
++func (o *lifecycleRouteOwner) SignalStop(string) {}
++
++func TestConcurrentLifecycleRoutesUseSingleOwner(t *testing.T) {
++	instance := instance_model.Instance{Id: "instance-production-trace", Token: "redacted-token"}
++	repository := &lifecycleRouteRepository{instance: instance}
++	owner := &lifecycleRouteOwner{}
++	service := instances{
++		instanceRepository: repository,
++		config:             &config.Config{},
++		whatsmeowService:   owner,
++		loggerWrapper: logger_wrapper.NewLoggerManager(&config.Config{
++			LogDirectory: t.TempDir(),
++		}),
++	}
++
++	var wg sync.WaitGroup
++	wg.Add(4)
++	go func() {
++		defer wg.Done()
++		instanceCopy := instance
++		_, _, _, _ = service.Connect(&ConnectStruct{}, &instanceCopy)
++	}()
++	go func() {
++		defer wg.Done()
++		_ = service.ForceReconnect(instance.Id, "redacted-number")
++	}()
++	go func() {
++		defer wg.Done()
++		instanceCopy := instance
++		_, _ = service.Logout(&instanceCopy)
++	}()
++	go func() {
++		defer wg.Done()
++		_ = service.Delete(instance.Id)
++	}()
++	wg.Wait()
++
++	if owner.maxActive.Load() != 1 {
++		t.Fatalf("lifecycle routes overlapped: max active operations = %d", owner.maxActive.Load())
++	}
++	if owner.starts.Load() != 1 {
++		t.Fatalf("created %d client generations, want exactly one", owner.starts.Load())
++	}
++	if owner.maxHandlers.Load() > 1 || owner.handlers.Load() > 1 {
++		t.Fatalf("event handler leak: current=%d max=%d", owner.handlers.Load(), owner.maxHandlers.Load())
++	}
++}
+diff --git a/pkg/label/service/label_service.go b/pkg/label/service/label_service.go
+index b0a9070db..f9429facc 100644
+--- a/pkg/label/service/label_service.go
++++ b/pkg/label/service/label_service.go
+@@ -50,7 +50,7 @@ type EditLabelStruct struct {
+ }
+ 
+ func (l *labelService) ensureClientConnected(instanceId string) (*whatsmeow.Client, error) {
+-	client := l.clientPointer[instanceId]
++	client := l.whatsmeowService.GetClient(instanceId)
+ 	l.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Checking client connection status - Client exists: %v", instanceId, client != nil)
+ 
+ 	if client == nil {
+@@ -64,7 +64,7 @@ func (l *labelService) ensureClientConnected(instanceId string) (*whatsmeow.Clie
+ 		l.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Instance started, waiting 2 seconds...", instanceId)
+ 		time.Sleep(2 * time.Second)
+ 
+-		client = l.clientPointer[instanceId]
++		client = l.whatsmeowService.GetClient(instanceId)
+ 		l.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Checking new client - Exists: %v, Connected: %v",
+ 			instanceId,
+ 			client != nil,
+diff --git a/pkg/message/service/message_service.go b/pkg/message/service/message_service.go
+index f8f139205..4d7e5651a 100644
+--- a/pkg/message/service/message_service.go
++++ b/pkg/message/service/message_service.go
+@@ -95,7 +95,7 @@ type MessageSendStruct struct {
+ }
+ 
+ func (m *messageService) ensureClientConnected(instanceId string) (*whatsmeow.Client, error) {
+-	client := m.clientPointer[instanceId]
++	client := m.whatsmeowService.GetClient(instanceId)
+ 	m.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Checking client connection status - Client exists: %v", instanceId, client != nil)
+ 
+ 	if client == nil {
+@@ -109,7 +109,7 @@ func (m *messageService) ensureClientConnected(instanceId string) (*whatsmeow.Cl
+ 		m.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Instance started, waiting 2 seconds...", instanceId)
+ 		time.Sleep(2 * time.Second)
+ 
+-		client = m.clientPointer[instanceId]
++		client = m.whatsmeowService.GetClient(instanceId)
+ 		m.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Checking new client - Exists: %v, Connected: %v",
+ 			instanceId,
+ 			client != nil,
+@@ -301,7 +301,7 @@ func (m *messageService) ChatPresence(data *ChatPresenceStruct, instance *instan
+ 		}
+ 	}
+ 
+-	m.loggerWrapper.GetLogger(instance.Id).LogInfo("Presence (%s) sent to %s", data.State, data.Number)
++	m.loggerWrapper.GetLogger(instance.Id).LogInfo("Presence state %s sent", data.State)
+ 
+ 	return ts.String(), nil
+ }
+@@ -478,7 +478,7 @@ func (m *messageService) DeleteMessageEveryone(data *MessageStruct, instance *in
+ 		return "", "", errors.New("invalid phone number")
+ 	}
+ 
+-	m.loggerWrapper.GetLogger(instance.Id).LogInfo("Revoking message %s from %s", data.MessageID, recipient)
++	m.loggerWrapper.GetLogger(instance.Id).LogInfo("Revoking message %s", data.MessageID)
+ 
+ 	resp, err := client.SendMessage(
+ 		context.Background(),
+diff --git a/pkg/middleware/jid_validation_middleware.go b/pkg/middleware/jid_validation_middleware.go
+index c065f4644..8cc0b6f23 100644
+--- a/pkg/middleware/jid_validation_middleware.go
++++ b/pkg/middleware/jid_validation_middleware.go
+@@ -74,7 +74,7 @@ func (m *JIDValidationMiddleware) ValidateJIDFields(fieldNames ...string) gin.Ha
+ 					if normalizedJID != strValue {
+ 						requestData[fieldName] = normalizedJID
+ 						modified = true
+-						logger.LogDebug("Normalized %s from %s to %s", fieldName, strValue, normalizedJID)
++						logger.LogDebug("Normalized identity field %s", fieldName)
+ 					}
+ 				} else if strValue == "" {
+ 					c.JSON(http.StatusBadRequest, gin.H{
+@@ -188,7 +188,7 @@ func (m *JIDValidationMiddleware) ValidateNumberField() gin.HandlerFunc {
+ 						if normalizedJID != strValue {
+ 							arrayValue[i] = normalizedJID
+ 							modified = true
+-							logger.LogDebug("Normalized number[%d] from %s to %s", i, strValue, normalizedJID)
++							logger.LogDebug("Normalized identity at index %d", i)
+ 						}
+ 					} else if strValue == "" {
+ 						c.JSON(http.StatusBadRequest, gin.H{
+@@ -220,7 +220,7 @@ func (m *JIDValidationMiddleware) ValidateNumberField() gin.HandlerFunc {
+ 				if normalizedJID != strValue {
+ 					requestData["number"] = normalizedJID
+ 					modified = true
+-					logger.LogDebug("Normalized number from %s to %s", strValue, normalizedJID)
++					logger.LogDebug("Normalized recipient identity")
+ 				}
+ 			} else {
+ 				c.JSON(http.StatusBadRequest, gin.H{
+@@ -384,7 +384,7 @@ func (m *JIDValidationMiddleware) ValidateNumberFieldWithFormatJid() gin.Handler
+ 							if normalizedJID != strValue {
+ 								arrayValue[i] = normalizedJID
+ 								modified = true
+-								logger.LogDebug("Normalized number[%d] from %s to %s", i, strValue, normalizedJID)
++								logger.LogDebug("Normalized identity at index %d", i)
+ 							}
+ 						}
+ 						// When formatJid is false, we accept numbers as received without validation
+@@ -420,7 +420,7 @@ func (m *JIDValidationMiddleware) ValidateNumberFieldWithFormatJid() gin.Handler
+ 					if normalizedJID != strValue {
+ 						requestData["number"] = normalizedJID
+ 						modified = true
+-						logger.LogDebug("Normalized number from %s to %s", strValue, normalizedJID)
++						logger.LogDebug("Normalized recipient identity")
+ 					}
+ 				}
+ 				// When formatJid is false, we accept numbers as received without validation
+diff --git a/pkg/newsletter/service/newsletter_service.go b/pkg/newsletter/service/newsletter_service.go
+index 6a8f67792..4595a8aa8 100644
+--- a/pkg/newsletter/service/newsletter_service.go
++++ b/pkg/newsletter/service/newsletter_service.go
+@@ -47,7 +47,7 @@ type GetNewsletterMessagesStruct struct {
+ }
+ 
+ func (n *newsletterService) ensureClientConnected(instanceId string) (*whatsmeow.Client, error) {
+-	client := n.clientPointer[instanceId]
++	client := n.whatsmeowService.GetClient(instanceId)
+ 	n.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Checking client connection status - Client exists: %v", instanceId, client != nil)
+ 
+ 	if client == nil {
+@@ -61,7 +61,7 @@ func (n *newsletterService) ensureClientConnected(instanceId string) (*whatsmeow
+ 		n.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Instance started, waiting 2 seconds...", instanceId)
+ 		time.Sleep(2 * time.Second)
+ 
+-		client = n.clientPointer[instanceId]
++		client = n.whatsmeowService.GetClient(instanceId)
+ 		n.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Checking new client - Exists: %v, Connected: %v",
+ 			instanceId,
+ 			client != nil,
+@@ -121,7 +121,7 @@ func (n *newsletterService) ListNewsletter(instance *instance_model.Instance) ([
+ 		fullInfo, err := client.GetNewsletterInfo(context.Background(), newsletter.ID)
+ 		if err != nil {
+ 			// If we can't get full info, use the basic one
+-			n.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] error getting full info for newsletter %s: %v", instance.Id, newsletter.ID.String(), err)
++			n.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] error getting full info for newsletter: %v", instance.Id, err)
+ 			fullNewsletters = append(fullNewsletters, newsletter)
+ 			continue
+ 		}
+diff --git a/pkg/poll/service/poll_service.go b/pkg/poll/service/poll_service.go
+index 5fc2345c8..09246d475 100644
+--- a/pkg/poll/service/poll_service.go
++++ b/pkg/poll/service/poll_service.go
+@@ -82,7 +82,7 @@ func (s *pollService) autoMigrate() error {
+ // SavePollVote salva um voto de enquete no banco de dados (NÃO-INVASIVO)
+ func (s *pollService) SavePollVote(ctx context.Context, vote *model.PollVote) error {
+ 	// Log seguro - não expõe dados sensíveis
+-	s.loggerWrapper.GetLogger("poll-service").LogInfo("[POLL] Saving vote for poll %s from %s", vote.PollMessageID, vote.VoterJid)
++	s.loggerWrapper.GetLogger("poll-service").LogInfo("[POLL] Saving vote for poll %s", vote.PollMessageID)
+ 
+ 	// Extrair telefone do JID de forma segura
+ 	if vote.VoterPhone == "" && strings.Contains(vote.VoterJid, "@") {
+@@ -278,15 +278,6 @@ func BuildPollVoteFromEvent(
+ 	// NOTA: O JID swap já foi feito antes de chegar aqui!
+ 	// Se havia LID+WhatsApp, o Sender JÁ É o número real (@s.whatsapp.net) e SenderAlt é o LID
+ 	voterPhone := voteInfo.Sender.User
+-	voterJid := voteInfo.Sender.String()
+-
+-	fmt.Printf("[POLL DEBUG] ==========================================\n")
+-	fmt.Printf("[POLL DEBUG] Voter JID: %s\n", voterJid)
+-	fmt.Printf("[POLL DEBUG] Sender.Server: %s\n", voteInfo.Sender.Server)
+-	fmt.Printf("[POLL DEBUG] Sender.User: %s\n", voteInfo.Sender.User)
+-	fmt.Printf("[POLL DEBUG] FINAL voterPhone: %s\n", voterPhone)
+-	fmt.Printf("[POLL DEBUG] ==========================================\n")
+-
+ 	return &model.PollVote{
+ 		ID:              uuid.New().String(),
+ 		CompanyID:       companyID,
+diff --git a/pkg/sendMessage/service/connection_state_test.go b/pkg/sendMessage/service/connection_state_test.go
+new file mode 100644
+index 000000000..a759d284f
+--- /dev/null
++++ b/pkg/sendMessage/service/connection_state_test.go
+@@ -0,0 +1,31 @@
++package send_service
++
++import "testing"
++
++type fakeConnectionState struct {
++	connected bool
++	loggedIn  bool
++}
++
++func (f fakeConnectionState) IsConnected() bool { return f.connected }
++func (f fakeConnectionState) IsLoggedIn() bool  { return f.loggedIn }
++
++func TestClientSessionReadyRequiresConnectedAndLoggedIn(t *testing.T) {
++	tests := []struct {
++		name      string
++		state     fakeConnectionState
++		wantReady bool
++	}{
++		{name: "connected but stale login", state: fakeConnectionState{connected: true, loggedIn: false}, wantReady: false},
++		{name: "logged in but socket down", state: fakeConnectionState{connected: false, loggedIn: true}, wantReady: false},
++		{name: "active session", state: fakeConnectionState{connected: true, loggedIn: true}, wantReady: true},
++	}
++
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			if got := clientSessionReady(tt.state); got != tt.wantReady {
++				t.Fatalf("clientSessionReady() = %v, want %v", got, tt.wantReady)
++			}
++		})
++	}
++}
+diff --git a/pkg/sendMessage/service/send_service.go b/pkg/sendMessage/service/send_service.go
+index b88500893..82f3f97b5 100644
+--- a/pkg/sendMessage/service/send_service.go
++++ b/pkg/sendMessage/service/send_service.go
+@@ -379,8 +379,17 @@ type MessageSendStruct struct {
+ 	MessageContextInfo *waE2E.ContextInfo
+ }
+ 
++type connectionState interface {
++	IsConnected() bool
++	IsLoggedIn() bool
++}
++
++func clientSessionReady(client connectionState) bool {
++	return client != nil && client.IsConnected() && client.IsLoggedIn()
++}
++
+ func (s *sendService) ensureClientConnected(instanceId string) (*whatsmeow.Client, error) {
+-	client := s.clientPointer[instanceId]
++	client := s.whatsmeowService.GetClient(instanceId)
+ 	s.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Checking client connection status - Client exists: %v", instanceId, client != nil)
+ 
+ 	if client == nil {
+@@ -394,27 +403,27 @@ func (s *sendService) ensureClientConnected(instanceId string) (*whatsmeow.Clien
+ 		s.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Instance started, waiting 2 seconds...", instanceId)
+ 		time.Sleep(2 * time.Second)
+ 
+-		client = s.clientPointer[instanceId]
++		client = s.whatsmeowService.GetClient(instanceId)
+ 		s.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Checking new client - Exists: %v, Connected: %v",
+ 			instanceId,
+ 			client != nil,
+ 			client != nil && client.IsConnected())
+ 
+-		if client == nil || !client.IsConnected() {
++		if !clientSessionReady(client) {
+ 			s.loggerWrapper.GetLogger(instanceId).LogError("[%s] New client validation failed - Exists: %v, Connected: %v",
+ 				instanceId,
+ 				client != nil,
+ 				client != nil && client.IsConnected())
+ 			return nil, errors.New("no active session found")
+ 		}
+-	} else if !client.IsConnected() {
++	} else if !clientSessionReady(client) {
+ 		s.loggerWrapper.GetLogger(instanceId).LogError("[%s] Existing client is disconnected - Connected status: %v",
+ 			instanceId,
+ 			client.IsConnected())
+ 		return nil, errors.New("client disconnected")
+ 	}
+ 
+-	s.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Client successfully validated - Connected: %v", instanceId, client.IsConnected())
++	s.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Client successfully validated - Connected: %v, LoggedIn: %v", instanceId, client.IsConnected(), client.IsLoggedIn())
+ 	return client, nil
+ }
+ 
+@@ -555,7 +564,7 @@ func (s *sendService) validateAndCheckUserExists(phone string, formatJid *bool,
+ 		return types.NewJID("", types.DefaultUserServer), fmt.Errorf("number %s is not registered on WhatsApp", phone)
+ 	}
+ 
+-	s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Number %s verified as valid WhatsApp user, using remoteJID: %s", instance.Id, phone, remoteJID)
++	s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Recipient verified as a valid WhatsApp user", instance.Id)
+ 
+ 	// Validate the remoteJID with formatJid=false for message sending
+ 	formatJidFalse := false
+@@ -1225,7 +1234,7 @@ func (s *sendService) SendMediaUrl(data *MediaStruct, instance *instance_model.I
+ 
+ func (s *sendService) sendMediaUrlWithRetry(data *MediaStruct, instance *instance_model.Instance, maxRetries int) (*MessageSendStruct, error) {
+ 	for attempt := 1; attempt <= maxRetries; attempt++ {
+-		s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] SendMediaUrl attempt %d/%d for URL: %s", instance.Id, attempt, maxRetries, data.Url)
++		s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] SendMediaUrl attempt %d/%d", instance.Id, attempt, maxRetries)
+ 		startTime := time.Now()
+ 
+ 		client, err := s.ensureClientConnectedWithRetry(instance.Id, 2)
+@@ -1236,7 +1245,7 @@ func (s *sendService) sendMediaUrlWithRetry(data *MediaStruct, instance *instanc
+ 			continue
+ 		}
+ 
+-		s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Iniciando download da URL: %s", instance.Id, data.Url)
++		s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Iniciando download de mídia", instance.Id)
+ 
+ 		resp, err := http.Get(data.Url)
+ 		if err != nil {
+@@ -2343,12 +2352,16 @@ func (s *sendService) SendList(data *ListStruct, instance *instance_model.Instan
+ 		return nil, err
+ 	}
+ 
+-	s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] List sent to %s", instance.Id, data.Number)
++	s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] List sent", instance.Id)
+ 	return message, nil
+ }
+ 
+ func (s *sendService) SendMessage(instance *instance_model.Instance, msg *waE2E.Message, messageType string, data *SendDataStruct) (*MessageSendStruct, error) {
+-	s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] SendMessage called for number: %s, type: %s", instance.Id, data.Number, messageType)
++	s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] SendMessage called, type: %s", instance.Id, messageType)
++	client := s.whatsmeowService.GetClient(instance.Id)
++	if !clientSessionReady(client) {
++		return nil, errors.New("client disconnected")
++	}
+ 
+ 	recipient, err := s.validateAndCheckUserExists(data.Number, data.FormatJid, &data.Quoted.MessageID, &data.Quoted.MessageID, instance)
+ 	if err != nil {
+@@ -2356,11 +2369,11 @@ func (s *sendService) SendMessage(instance *instance_model.Instance, msg *waE2E.
+ 		return nil, err
+ 	}
+ 
+-	s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Recipient validated: %s (Server: %s)", instance.Id, recipient.String(), recipient.Server)
++	s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Recipient validated (server: %s)", instance.Id, recipient.Server)
+ 
+ 	var message string
+ 	if data.Id == "" {
+-		message = s.clientPointer[instance.Id].GenerateMessageID()
++		message = client.GenerateMessageID()
+ 	} else {
+ 		message = data.Id
+ 	}
+@@ -2371,14 +2384,14 @@ func (s *sendService) SendMessage(instance *instance_model.Instance, msg *waE2E.
+ 			media = "audio"
+ 		}
+ 
+-		err := s.clientPointer[instance.Id].SendChatPresence(context.Background(), recipient, types.ChatPresence("composing"), types.ChatPresenceMedia(media))
++		err := client.SendChatPresence(context.Background(), recipient, types.ChatPresence("composing"), types.ChatPresenceMedia(media))
+ 		if err != nil {
+ 			return nil, err
+ 		}
+ 
+ 		time.Sleep(time.Duration(data.Delay) * time.Millisecond)
+ 
+-		err = s.clientPointer[instance.Id].SendChatPresence(context.Background(), recipient, types.ChatPresence("paused"), types.ChatPresenceMedia(media))
++		err = client.SendChatPresence(context.Background(), recipient, types.ChatPresence("paused"), types.ChatPresenceMedia(media))
+ 		if err != nil {
+ 			return nil, err
+ 		}
+@@ -2631,7 +2644,7 @@ func (s *sendService) SendMessage(instance *instance_model.Instance, msg *waE2E.
+ 	// Only try to get participants for actual groups, not newsletters
+ 	if isGroup && !isNewsletter {
+ 		if data.MentionAll {
+-			groupInfo, err := s.clientPointer[instance.Id].GetGroupInfo(context.Background(), recipient)
++			groupInfo, err := client.GetGroupInfo(context.Background(), recipient)
+ 			if err != nil {
+ 				return nil, err
+ 			}
+@@ -2753,8 +2766,11 @@ func (s *sendService) SendMessage(instance *instance_model.Instance, msg *waE2E.
+ 	}
+ 
+ 	recipient.User = strings.ReplaceAll(recipient.User, "+", "")
++	if !s.whatsmeowService.IsCurrentClient(instance.Id, client) || !clientSessionReady(client) {
++		return nil, errors.New("no active session found")
++	}
+ 
+-	s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Sending message to %s with ID %s", instance.Id, recipient.String(), message)
++	s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Sending message with ID %s", instance.Id, message)
+ 
+ 	// Preparar extra parameters para o envio
+ 	sendExtra := whatsmeow.SendRequestExtra{ID: message}
+@@ -2770,7 +2786,7 @@ func (s *sendService) SendMessage(instance *instance_model.Instance, msg *waE2E.
+ 		sendExtra.AdditionalNodes = data.AdditionalNodes
+ 	}
+ 
+-	response, err := s.clientPointer[instance.Id].SendMessage(context.Background(), recipient, msg, sendExtra)
++	response, err := client.SendMessage(context.Background(), recipient, msg, sendExtra)
+ 	if err != nil {
+ 		s.loggerWrapper.GetLogger(instance.Id).LogError("[%s] Error sending message: %v", instance.Id, err)
+ 		return nil, err
+@@ -2781,7 +2797,7 @@ func (s *sendService) SendMessage(instance *instance_model.Instance, msg *waE2E.
+ 	messageInfo := types.MessageInfo{
+ 		MessageSource: types.MessageSource{
+ 			Chat:     recipient,
+-			Sender:   *s.clientPointer[instance.Id].Store.ID,
++			Sender:   *client.Store.ID,
+ 			IsFromMe: true,
+ 			IsGroup:  isGroup,
+ 		},
+@@ -2835,15 +2851,15 @@ func (s *sendService) SendMessage(instance *instance_model.Instance, msg *waE2E.
+ 		sticker := msg.GetStickerMessage()
+ 
+ 		if img != nil {
+-			data, err = s.clientPointer[instance.Id].Download(context.Background(), img)
++			data, err = client.Download(context.Background(), img)
+ 		} else if audio != nil {
+-			data, err = s.clientPointer[instance.Id].Download(context.Background(), audio)
++			data, err = client.Download(context.Background(), audio)
+ 		} else if document != nil {
+-			data, err = s.clientPointer[instance.Id].Download(context.Background(), document)
++			data, err = client.Download(context.Background(), document)
+ 		} else if video != nil {
+-			data, err = s.clientPointer[instance.Id].Download(context.Background(), video)
++			data, err = client.Download(context.Background(), video)
+ 		} else if sticker != nil {
+-			data, err = s.clientPointer[instance.Id].Download(context.Background(), sticker)
++			data, err = client.Download(context.Background(), sticker)
+ 
+ 			webpReader := bytes.NewReader(data)
+ 			img, err := webp.Decode(webpReader)
+@@ -2892,7 +2908,7 @@ func (s *sendService) SendMessage(instance *instance_model.Instance, msg *waE2E.
+ 		go s.whatsmeowService.SendToGlobalQueues(postMap["event"].(string), values, instance.Id)
+ 	}
+ 
+-	s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Message sent to %s", instance.Id, data.Number)
++	s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Message sent", instance.Id)
+ 	return messageSent, nil
+ }
+ 
+@@ -2924,7 +2940,7 @@ func (s *sendService) SendCarousel(data *CarouselStruct, instance *instance_mode
+ 	cards := make([]*waE2E.InteractiveMessage, len(data.Cards))
+ 	messageVersion := int32(1)
+ 
+-	s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Building carousel for %s with %d cards", instance.Id, recipient.String(), len(data.Cards))
++	s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Building carousel for server %s with %d cards", instance.Id, recipient.Server, len(data.Cards))
+ 
+ 	for i, card := range data.Cards {
+ 		// Each card MUST have both header and body for carousel to work
+@@ -3116,7 +3132,7 @@ func (s *sendService) SendCarousel(data *CarouselStruct, instance *instance_mode
+ 		return nil, err
+ 	}
+ 
+-	s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Carousel sent to %s with %d cards", instance.Id, data.Number, len(data.Cards))
++	s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Carousel sent with %d cards", instance.Id, len(data.Cards))
+ 	return message, nil
+ }
+ 
+diff --git a/pkg/storage/minio/media_storage.go b/pkg/storage/minio/media_storage.go
+index 32f48179a..124649213 100644
+--- a/pkg/storage/minio/media_storage.go
++++ b/pkg/storage/minio/media_storage.go
+@@ -110,8 +110,6 @@ func (m *MinioMediaStorage) Store(ctx context.Context, data []byte, fileName str
+ 		return "", fmt.Errorf("failed to generate presigned URL: %w", err)
+ 	}
+ 
+-	fmt.Println(presignedURL.String())
+-
+ 	return presignedURL.String(), nil
+ }
+ 
+@@ -149,7 +147,5 @@ func (m *MinioMediaStorage) GetURL(ctx context.Context, fileName string) (string
+ 		return "", fmt.Errorf("failed to generate presigned URL: %w", err)
+ 	}
+ 
+-	fmt.Println(presignedURL.String())
+-
+ 	return presignedURL.String(), nil
+ }
+diff --git a/pkg/user/service/user_service.go b/pkg/user/service/user_service.go
+index f3011606d..f5388f93b 100644
+--- a/pkg/user/service/user_service.go
++++ b/pkg/user/service/user_service.go
+@@ -109,7 +109,7 @@ type PrivacyStruct struct {
+ }
+ 
+ func (u *userService) ensureClientConnected(instanceId string) (*whatsmeow.Client, error) {
+-	client := u.clientPointer[instanceId]
++	client := u.whatsmeowService.GetClient(instanceId)
+ 	u.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Checking client connection status - Client exists: %v", instanceId, client != nil)
+ 
+ 	if client == nil {
+@@ -123,7 +123,7 @@ func (u *userService) ensureClientConnected(instanceId string) (*whatsmeow.Clien
+ 		u.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Instance started, waiting 2 seconds...", instanceId)
+ 		time.Sleep(2 * time.Second)
+ 
+-		client = u.clientPointer[instanceId]
++		client = u.whatsmeowService.GetClient(instanceId)
+ 		u.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Checking new client - Exists: %v, Connected: %v",
+ 			instanceId,
+ 			client != nil,
+@@ -336,7 +336,7 @@ func (u *userService) GetAvatar(data *GetAvatarStruct, instance *instance_model.
+ 		return nil, errors.New("invalid phone number")
+ 	}
+ 
+-	u.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Requesting avatar for JID: %s, Preview: %v", instance.Id, jid, data.Preview)
++	u.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Requesting avatar (preview=%v)", instance.Id, data.Preview)
+ 
+ 	var pic *types.ProfilePictureInfo
+ 
+@@ -532,7 +532,7 @@ func (u *userService) SetProfileStatus(data *SetProfileStatusStruct, instance *i
+ 		return false, err
+ 	}
+ 
+-	err = client.SetStatusMessage(context.Background(), data.Status)
++	err = client.SetStatusMessage(context.Background(), types.SetStatusInput{Text: &data.Status})
+ 	if err != nil {
+ 		return false, err
+ 	}
+diff --git a/pkg/utils/utils.go b/pkg/utils/utils.go
+index 0e786c008..e40492363 100644
+--- a/pkg/utils/utils.go
++++ b/pkg/utils/utils.go
+@@ -196,19 +196,19 @@ func ParseJID(arg string) (whatsmeow_types.JID, bool) {
+ 	// Use CreateJID for consistent formatting
+ 	jidString, err := CreateJID(arg)
+ 	if err != nil {
+-		logger.LogWarn("Failed to create JID: %s", err.Error())
++		logger.LogWarn("Failed to create recipient identity")
+ 		return whatsmeow_types.NewJID("", whatsmeow_types.DefaultUserServer), false
+ 	}
+ 
+ 	// Parse the formatted JID
+ 	recipient, err := whatsmeow_types.ParseJID(jidString)
+ 	if err != nil {
+-		logger.LogWarn("Invalid JID: %s", err.Error())
++		logger.LogWarn("Invalid recipient identity")
+ 		return recipient, false
+ 	}
+ 
+ 	if recipient.User == "" && !strings.Contains(jidString, "@broadcast") {
+-		logger.LogError("Invalid JID. No user specified: %s", jidString)
++		logger.LogError("Invalid recipient identity: no user specified")
+ 		return recipient, false
+ 	}
+ 
+diff --git a/pkg/whatsmeow/service/reconnect_contract_test.go b/pkg/whatsmeow/service/reconnect_contract_test.go
+new file mode 100644
+index 000000000..13ce9e065
+--- /dev/null
++++ b/pkg/whatsmeow/service/reconnect_contract_test.go
+@@ -0,0 +1,499 @@
++package whatsmeow_service
++
++import (
++	"context"
++	"os"
++	"path/filepath"
++	"runtime"
++	"strings"
++	"sync"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/patrickmn/go-cache"
++	"go.mau.fi/whatsmeow"
++	"go.mau.fi/whatsmeow/store"
++	"go.mau.fi/whatsmeow/types"
++	"go.mau.fi/whatsmeow/types/events"
++
++	"github.com/evolution-foundation/evolution-go/pkg/config"
++	instance_model "github.com/evolution-foundation/evolution-go/pkg/instance/model"
++	logger_wrapper "github.com/evolution-foundation/evolution-go/pkg/logger"
++	"github.com/evolution-foundation/evolution-go/pkg/passkey/ceremony"
++	poll_service "github.com/evolution-foundation/evolution-go/pkg/poll/service"
++)
++
++type fakeLifecycleService struct {
++	reconnects atomic.Int32
++	webhooks   atomic.Int32
++	webhook    chan struct{}
++}
++
++func (f *fakeLifecycleService) ConnectOnStartup(string)                     {}
++func (f *fakeLifecycleService) StartInstance(string) error                  { return nil }
++func (f *fakeLifecycleService) ReconnectClient(string) error                { f.reconnects.Add(1); return nil }
++func (f *fakeLifecycleService) StopInstance(string, string, bool) error     { return nil }
++func (f *fakeLifecycleService) ClearInstanceCache(string, string) error     { return nil }
++func (f *fakeLifecycleService) SendToGlobalQueues(string, []byte, string)   {}
++func (f *fakeLifecycleService) ForceUpdateJid(string, string) error         { return nil }
++func (f *fakeLifecycleService) UpdateInstanceSettings(string) error         { return nil }
++func (f *fakeLifecycleService) UpdateInstanceAdvancedSettings(string) error { return nil }
++func (f *fakeLifecycleService) GetPollService() poll_service.PollService    { return nil }
++func (f *fakeLifecycleService) PasskeyCeremonyStore() *ceremony.Store       { return nil }
++func (f *fakeLifecycleService) SubmitPasskeyResponse(string, *types.WebAuthnResponse) error {
++	return nil
++}
++func (f *fakeLifecycleService) ConfirmPasskey(string) error        { return nil }
++func (f *fakeLifecycleService) GetClient(string) *whatsmeow.Client { return nil }
++func (f *fakeLifecycleService) IsCurrentClient(string, *whatsmeow.Client) bool {
++	return true
++}
++func (f *fakeLifecycleService) SignalStop(string) {}
++func (f *fakeLifecycleService) CallWebhook(*instance_model.Instance, string, []byte) {
++	f.webhooks.Add(1)
++	select {
++	case f.webhook <- struct{}{}:
++	default:
++	}
++}
++
++type fakeInstanceRepository struct {
++	connected    atomic.Bool
++	qrcodeWrites atomic.Int32
++	instance     *instance_model.Instance
++}
++
++func (f *fakeInstanceRepository) Create(instance_model.Instance) (*instance_model.Instance, error) {
++	return nil, nil
++}
++func (f *fakeInstanceRepository) GetInstanceByID(string) (*instance_model.Instance, error) {
++	if f.instance == nil {
++		return nil, nil
++	}
++	copy := *f.instance
++	return &copy, nil
++}
++func (f *fakeInstanceRepository) GetConnectedInstanceByID(string) (*instance_model.Instance, error) {
++	return nil, nil
++}
++func (f *fakeInstanceRepository) GetInstanceByToken(string) (*instance_model.Instance, error) {
++	return nil, nil
++}
++func (f *fakeInstanceRepository) GetInstanceByName(string) (*instance_model.Instance, error) {
++	return nil, nil
++}
++func (f *fakeInstanceRepository) Update(*instance_model.Instance) error { return nil }
++func (f *fakeInstanceRepository) UpdateConnected(_ string, status bool, _ string) error {
++	f.connected.Store(status)
++	return nil
++}
++func (f *fakeInstanceRepository) UpdateQrcode(string, string) error {
++	f.qrcodeWrites.Add(1)
++	return nil
++}
++func (f *fakeInstanceRepository) UpdateProxy(string, string) error { return nil }
++func (f *fakeInstanceRepository) UpdateJid(string, string) error   { return nil }
++func (f *fakeInstanceRepository) GetAllConnectedInstances() ([]*instance_model.Instance, error) {
++	return nil, nil
++}
++func (f *fakeInstanceRepository) GetAllConnectedInstancesByClientName(string) ([]*instance_model.Instance, error) {
++	return nil, nil
++}
++func (f *fakeInstanceRepository) GetAll(string) ([]*instance_model.Instance, error) {
++	return nil, nil
++}
++func (f *fakeInstanceRepository) Delete(string) error { return nil }
++func (f *fakeInstanceRepository) GetAdvancedSettings(string) (*instance_model.AdvancedSettings, error) {
++	return nil, nil
++}
++func (f *fakeInstanceRepository) UpdateAdvancedSettings(string, *instance_model.AdvancedSettings) error {
++	return nil
++}
++
++func TestDisconnectedKeepsNativeWhatsmeowLifecycle(t *testing.T) {
++	source, err := os.ReadFile("whatsmeow.go")
++	if err != nil {
++		t.Fatal(err)
++	}
++	code := string(source)
++	if !strings.Contains(code, "client.EnableAutoReconnect = true") {
++		t.Fatal("WhatsMeow native reconnect must remain enabled")
++	}
++
++	start := strings.Index(code, "case *events.Disconnected:")
++	end := strings.Index(code[start:], "case *events.LabelEdit:")
++	if start < 0 || end < 0 {
++		t.Fatal("Disconnected event branch not found")
++	}
++	disconnectedBranch := code[start : start+end]
++	if strings.Contains(disconnectedBranch, "ReconnectClient") {
++		t.Fatal("Disconnected event must not create a second client lifecycle")
++	}
++}
++
++func TestProductionDisconnectedEventUsesNativeReconnectWithoutNewGeneration(t *testing.T) {
++	repo := &fakeInstanceRepository{}
++	repo.connected.Store(true)
++	service := &fakeLifecycleService{webhook: make(chan struct{}, 1)}
++	instanceID := "instance-production-trace"
++	myClient := &MyClient{
++		service:            service,
++		userID:             instanceID,
++		token:              "redacted-production-token",
++		Instance:           &instance_model.Instance{Id: instanceID, Name: "production", Token: "redacted-production-token"},
++		instanceRepository: repo,
++		userInfoCache:      cache.New(time.Minute, time.Minute),
++		config:             &config.Config{},
++		loggerWrapper: logger_wrapper.NewLoggerManager(&config.Config{
++			LogDirectory: t.TempDir(),
++		}),
++	}
++
++	myClient.myEventHandler(&events.Disconnected{})
++	if service.reconnects.Load() != 0 {
++		t.Fatalf("Disconnected spawned %d manual client generations", service.reconnects.Load())
++	}
++	if repo.connected.Load() {
++		t.Fatal("Disconnected did not persist the transient offline state")
++	}
++	select {
++	case <-service.webhook:
++	case <-time.After(time.Second):
++		t.Fatal("Disconnected event was not forwarded to the existing webhook pipeline")
++	}
++}
++
++func TestSetClientAndClearInstanceCacheAreRaceSafe(t *testing.T) {
++	logDir := t.TempDir()
++	service := whatsmeowService{
++		killChannel:     make(map[string]chan bool),
++		clientPointer:   make(map[string]*whatsmeow.Client),
++		myClientPointer: make(map[string]*MyClient),
++		userInfoCache:   cache.New(time.Minute, time.Minute),
++		loggerWrapper: logger_wrapper.NewLoggerManager(&config.Config{
++			LogDirectory: logDir,
++		}),
++		lifecycleMu:    &sync.Mutex{},
++		lifecycleLocks: make(map[string]*sync.Mutex),
++		starting:       make(map[string]bool),
++		generations:    make(map[string]*lifecycleGeneration),
++	}
++
++	const instanceID = "instance-production-trace"
++	const secretToken = "must-not-appear-in-logs"
++	var wg sync.WaitGroup
++	for i := 0; i < 100; i++ {
++		wg.Add(3)
++		go func() {
++			defer wg.Done()
++			service.setClient(instanceID, nil)
++			service.setMyClient(instanceID, nil)
++		}()
++		go func() {
++			defer wg.Done()
++			if err := service.ClearInstanceCache(instanceID, secretToken); err != nil {
++				t.Errorf("ClearInstanceCache() error = %v", err)
++			}
++		}()
++		go func() {
++			defer wg.Done()
++			_ = service.GetClient(instanceID)
++			service.lifecycleMu.Lock()
++			generation := service.generations[instanceID]
++			service.lifecycleMu.Unlock()
++			service.signalStopGeneration(instanceID, generation)
++		}()
++	}
++	wg.Wait()
++
++	logData, err := os.ReadFile(filepath.Join(logDir, instanceID, "instance.log"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	if strings.Contains(string(logData), secretToken) {
++		t.Fatal("ClearInstanceCache logged the instance token")
++	}
++}
++
++func TestDuplicateReconnectsShareOneInstanceLock(t *testing.T) {
++	service := whatsmeowService{
++		lifecycleMu:    &sync.Mutex{},
++		lifecycleLocks: make(map[string]*sync.Mutex),
++	}
++
++	first := service.lifecycleLock("instance-production-trace")
++	second := service.lifecycleLock("instance-production-trace")
++	if first != second {
++		t.Fatal("duplicate reconnects received different lifecycle locks")
++	}
++
++	first.Lock()
++	entered := make(chan struct{})
++	go func() {
++		second.Lock()
++		close(entered)
++		second.Unlock()
++	}()
++
++	select {
++	case <-entered:
++		t.Fatal("duplicate reconnect entered while the first generation was active")
++	case <-time.After(25 * time.Millisecond):
++	}
++	first.Unlock()
++	select {
++	case <-entered:
++	case <-time.After(time.Second):
++		t.Fatal("duplicate reconnect did not continue after lifecycle release")
++	}
++}
++
++func TestCurrentClientIdentityRejectsStaleGeneration(t *testing.T) {
++	service := whatsmeowService{
++		clientPointer: make(map[string]*whatsmeow.Client),
++		lifecycleMu:   &sync.Mutex{},
++	}
++	current := &whatsmeow.Client{}
++	stale := &whatsmeow.Client{}
++	service.setClient("instance-production-trace", current)
++
++	if !service.IsCurrentClient("instance-production-trace", current) {
++		t.Fatal("current client generation was rejected")
++	}
++	if service.IsCurrentClient("instance-production-trace", stale) {
++		t.Fatal("stale client generation was accepted")
++	}
++}
++
++func TestSignalStopBroadcastsToAllLifecycleGoroutines(t *testing.T) {
++	service := whatsmeowService{
++		killChannel:    make(map[string]chan bool),
++		lifecycleMu:    &sync.Mutex{},
++		lifecycleLocks: make(map[string]*sync.Mutex),
++		starting:       make(map[string]bool),
++		generations:    make(map[string]*lifecycleGeneration),
++	}
++	generation := service.newGeneration("instance-production-trace")
++	done := make(chan struct{}, 2)
++	for range 2 {
++		go func() {
++			<-generation.ctx.Done()
++			done <- struct{}{}
++		}()
++	}
++
++	service.signalStopGeneration("instance-production-trace", generation)
++	service.signalStopGeneration("instance-production-trace", generation)
++	for range 2 {
++		select {
++		case <-done:
++		case <-time.After(time.Second):
++			t.Fatal("stop signal did not reach every lifecycle goroutine")
++		}
++	}
++
++}
++
++func TestStartThenImmediateStopLeavesNoLateLifecycle(t *testing.T) {
++	previousProcs := runtime.GOMAXPROCS(1)
++	defer runtime.GOMAXPROCS(previousProcs)
++
++	baseDir := t.TempDir()
++	if err := os.MkdirAll(filepath.Join(baseDir, "dbdata"), 0o755); err != nil {
++		t.Fatal(err)
++	}
++	const instanceID = "instance-production-trace"
++	const token = "redacted-production-token"
++	repo := &fakeInstanceRepository{instance: &instance_model.Instance{
++		Id:         instanceID,
++		Name:       "production",
++		Token:      token,
++		Events:     "MESSAGES_UPSERT",
++		OsName:     "Linux",
++		ClientName: "evolution",
++	}}
++	service := whatsmeowService{
++		instanceRepository: repo,
++		authStore:          &authStoreState{},
++		config: &config.Config{
++			WhatsappVersionMajor: 2,
++			WhatsappVersionMinor: 3000,
++			WhatsappVersionPatch: 1053070940,
++			LogDirectory:         filepath.Join(baseDir, "logs"),
++		},
++		killChannel:       make(map[string]chan bool),
++		clientPointer:     make(map[string]*whatsmeow.Client),
++		myClientPointer:   make(map[string]*MyClient),
++		userInfoCache:     cache.New(time.Minute, time.Minute),
++		processedMessages: cache.New(time.Minute, time.Minute),
++		exPath:            baseDir,
++		loggerWrapper: logger_wrapper.NewLoggerManager(&config.Config{
++			LogDirectory: filepath.Join(baseDir, "logs"),
++		}),
++		lifecycleMu:    &sync.Mutex{},
++		lifecycleLocks: make(map[string]*sync.Mutex),
++		starting:       make(map[string]bool),
++		generations:    make(map[string]*lifecycleGeneration),
++	}
++	t.Cleanup(func() {
++		if service.authStore.container != nil {
++			_ = service.authStore.container.Close()
++		}
++	})
++
++	for iteration := 0; iteration < 100; iteration++ {
++		if err := service.StartInstance(instanceID); err != nil {
++			t.Fatalf("iteration %d StartInstance: %v", iteration, err)
++		}
++		service.lifecycleMu.Lock()
++		generation := service.generations[instanceID]
++		service.lifecycleMu.Unlock()
++		if generation == nil {
++			t.Fatalf("iteration %d did not register generation synchronously", iteration)
++		}
++
++		if err := service.StopInstance(instanceID, token, false); err != nil {
++			t.Fatalf("iteration %d StopInstance: %v", iteration, err)
++		}
++		select {
++		case <-generation.done:
++		default:
++			t.Fatalf("iteration %d stop returned before lifecycle acknowledgement", iteration)
++		}
++
++		service.lifecycleMu.Lock()
++		_, hasGeneration := service.generations[instanceID]
++		_, hasKill := service.killChannel[instanceID]
++		_, hasClient := service.clientPointer[instanceID]
++		_, hasHandler := service.myClientPointer[instanceID]
++		_, isStarting := service.starting[instanceID]
++		service.lifecycleMu.Unlock()
++		if hasGeneration || hasKill || hasClient || hasHandler || isStarting {
++			t.Fatalf("iteration %d late lifecycle survived stop: generation=%v kill=%v client=%v handler=%v starting=%v", iteration, hasGeneration, hasKill, hasClient, hasHandler, isStarting)
++		}
++	}
++}
++
++func TestStaleQRWorkerCannotPublishOrStopNextGeneration(t *testing.T) {
++	previousProcs := runtime.GOMAXPROCS(1)
++	defer runtime.GOMAXPROCS(previousProcs)
++
++	baseDir := t.TempDir()
++	if err := os.MkdirAll(filepath.Join(baseDir, "dbdata"), 0o755); err != nil {
++		t.Fatal(err)
++	}
++	const instanceID = "instance-production-trace"
++	const token = "redacted-production-token"
++	repo := &fakeInstanceRepository{instance: &instance_model.Instance{
++		Id:         instanceID,
++		Name:       "production",
++		Token:      token,
++		Events:     "MESSAGE",
++		OsName:     "Linux",
++		ClientName: "evolution",
++	}}
++	service := whatsmeowService{
++		instanceRepository: repo,
++		authStore:          &authStoreState{},
++		config: &config.Config{
++			WhatsappVersionMajor: 2,
++			WhatsappVersionMinor: 3000,
++			WhatsappVersionPatch: 1053070940,
++			LogDirectory:         filepath.Join(baseDir, "logs"),
++		},
++		killChannel:       make(map[string]chan bool),
++		clientPointer:     make(map[string]*whatsmeow.Client),
++		myClientPointer:   make(map[string]*MyClient),
++		userInfoCache:     cache.New(time.Minute, time.Minute),
++		processedMessages: cache.New(time.Minute, time.Minute),
++		exPath:            baseDir,
++		loggerWrapper: logger_wrapper.NewLoggerManager(&config.Config{
++			LogDirectory: filepath.Join(baseDir, "logs"),
++		}),
++		lifecycleMu:    &sync.Mutex{},
++		lifecycleLocks: make(map[string]*sync.Mutex),
++		starting:       make(map[string]bool),
++		generations:    make(map[string]*lifecycleGeneration),
++	}
++	t.Cleanup(func() {
++		if service.authStore.container != nil {
++			_ = service.authStore.container.Close()
++		}
++	})
++
++	for iteration := 0; iteration < 100; iteration++ {
++		repo.qrcodeWrites.Store(0)
++		outbound := &fakeLifecycleService{webhook: make(chan struct{}, 1)}
++		generationA := service.newGeneration(instanceID)
++		clientA := whatsmeow.NewClient(&store.Device{}, nil)
++		entered := make(chan struct{})
++		release := make(chan struct{})
++		myClientA := &MyClient{
++			service:            outbound,
++			WAClient:           clientA,
++			userID:             instanceID,
++			token:              token,
++			Instance:           repo.instance,
++			instanceRepository: repo,
++			config:             service.config,
++			loggerWrapper:      service.loggerWrapper,
++			generation:         generationA,
++			lifecycle:          &service,
++			killSignal:         generationA.ctx.Done(),
++			qrBeforePublish: func(ctx context.Context) bool {
++				close(entered)
++				<-release
++				return ctx.Err() == nil
++			},
++		}
++		if !service.publishClient(instanceID, generationA, clientA) || !service.publishMyClient(instanceID, generationA, myClientA) {
++			t.Fatalf("iteration %d failed to publish generation A", iteration)
++		}
++		go func() {
++			<-generationA.ctx.Done()
++			service.finishGeneration(instanceID, generationA, clientA, myClientA)
++		}()
++		myClientA.handleQRCodes([]string{"stale-qr-must-not-publish"})
++		select {
++		case <-entered:
++		case <-time.After(time.Second):
++			t.Fatalf("iteration %d QR worker did not pause", iteration)
++		}
++
++		stopDone := make(chan error, 1)
++		go func() { stopDone <- service.StopInstance(instanceID, token, false) }()
++		select {
++		case <-generationA.ctx.Done():
++		case <-time.After(time.Second):
++			t.Fatalf("iteration %d stop did not cancel generation A", iteration)
++		}
++		startDone := make(chan error, 1)
++		go func() { startDone <- service.StartInstance(instanceID) }()
++		select {
++		case err := <-startDone:
++			t.Fatalf("iteration %d generation B started before A acknowledged stop: %v", iteration, err)
++		case <-time.After(time.Millisecond):
++		}
++
++		close(release)
++		if err := <-stopDone; err != nil {
++			t.Fatalf("iteration %d stop generation A: %v", iteration, err)
++		}
++		if err := <-startDone; err != nil {
++			t.Fatalf("iteration %d start generation B: %v", iteration, err)
++		}
++		service.lifecycleMu.Lock()
++		generationB := service.generations[instanceID]
++		service.lifecycleMu.Unlock()
++		if generationB == nil || generationB == generationA || generationB.ctx.Err() != nil {
++			t.Fatalf("iteration %d generation B is not active", iteration)
++		}
++		if repo.qrcodeWrites.Load() != 0 || outbound.webhooks.Load() != 0 {
++			t.Fatalf("iteration %d stale generation A published QR state: db=%d webhook=%d", iteration, repo.qrcodeWrites.Load(), outbound.webhooks.Load())
++		}
++		if err := service.StopInstance(instanceID, token, false); err != nil {
++			t.Fatalf("iteration %d stop generation B: %v", iteration, err)
++		}
++	}
++}
+diff --git a/pkg/whatsmeow/service/whatsmeow.go b/pkg/whatsmeow/service/whatsmeow.go
+index 88716d9c7..c86adf3f2 100644
+--- a/pkg/whatsmeow/service/whatsmeow.go
++++ b/pkg/whatsmeow/service/whatsmeow.go
+@@ -51,10 +51,10 @@ import (
+ )
+ 
+ type WhatsmeowService interface {
+-	StartClient(clientData *ClientData)
+ 	ConnectOnStartup(clientName string)
+ 	StartInstance(instanceId string) error
+ 	ReconnectClient(instanceId string) error
++	StopInstance(instanceId string, token string, logout bool) error
+ 	ClearInstanceCache(instanceId string, token string) error
+ 	CallWebhook(instance *instance_model.Instance, queueName string, jsonData []byte)
+ 	SendToGlobalQueues(event string, jsonData []byte, userId string)
+@@ -68,6 +68,8 @@ type WhatsmeowService interface {
+ 	PasskeyCeremonyStore() *ceremony.Store
+ 	SubmitPasskeyResponse(instanceId string, resp *types.WebAuthnResponse) error
+ 	ConfirmPasskey(instanceId string) error
++	GetClient(instanceId string) *whatsmeow.Client
++	IsCurrentClient(instanceId string, client *whatsmeow.Client) bool
+ }
+ 
+ type clientVersion struct {
+@@ -121,6 +123,59 @@ type whatsmeowService struct {
+ 	natsProducer       producer_interfaces.Producer
+ 	loggerWrapper      *logger_wrapper.LoggerManager
+ 	passkeyCeremony    *ceremony.Store
++	lifecycleMu        *sync.Mutex
++	lifecycleLocks     map[string]*sync.Mutex
++	starting           map[string]bool
++	generations        map[string]*lifecycleGeneration
++}
++
++type lifecycleGeneration struct {
++	ctx         context.Context
++	cancel      context.CancelFunc
++	done        chan struct{}
++	workers     sync.WaitGroup
++	workerMu    sync.Mutex
++	stopping    bool
++	presenceRun bool
++	qrRun       bool
++}
++
++func (g *lifecycleGeneration) beginStop() {
++	g.workerMu.Lock()
++	g.stopping = true
++	g.cancel()
++	g.workerMu.Unlock()
++}
++
++func (g *lifecycleGeneration) startPresence(client *MyClient) {
++	g.workerMu.Lock()
++	if g.stopping || g.ctx.Err() != nil || g.presenceRun {
++		g.workerMu.Unlock()
++		return
++	}
++	g.presenceRun = true
++	g.workers.Add(1)
++	g.workerMu.Unlock()
++	go func() {
++		defer g.workers.Done()
++		schedulePresenceUpdates(client)
++	}()
++}
++
++func (g *lifecycleGeneration) startQR(worker func(context.Context)) bool {
++	g.workerMu.Lock()
++	if g.stopping || g.ctx.Err() != nil || g.qrRun {
++		g.workerMu.Unlock()
++		return false
++	}
++	g.qrRun = true
++	g.workers.Add(1)
++	g.workerMu.Unlock()
++	go func() {
++		defer g.workers.Done()
++		worker(g.ctx)
++	}()
++	return true
+ }
+ 
+ type authStoreState struct {
+@@ -128,6 +183,132 @@ type authStoreState struct {
+ 	container *sqlstore.Container
+ }
+ 
++func (w whatsmeowService) lifecycleLock(instanceID string) *sync.Mutex {
++	w.lifecycleMu.Lock()
++	defer w.lifecycleMu.Unlock()
++	lock := w.lifecycleLocks[instanceID]
++	if lock == nil {
++		lock = &sync.Mutex{}
++		w.lifecycleLocks[instanceID] = lock
++	}
++	return lock
++}
++
++func (w whatsmeowService) GetClient(instanceID string) *whatsmeow.Client {
++	w.lifecycleMu.Lock()
++	defer w.lifecycleMu.Unlock()
++	return w.clientPointer[instanceID]
++}
++
++func (w whatsmeowService) IsCurrentClient(instanceID string, client *whatsmeow.Client) bool {
++	w.lifecycleMu.Lock()
++	defer w.lifecycleMu.Unlock()
++	return client != nil && w.clientPointer[instanceID] == client
++}
++
++func (w whatsmeowService) setClient(instanceID string, client *whatsmeow.Client) {
++	w.lifecycleMu.Lock()
++	defer w.lifecycleMu.Unlock()
++	w.clientPointer[instanceID] = client
++}
++
++func (w whatsmeowService) getMyClient(instanceID string) (*MyClient, bool) {
++	w.lifecycleMu.Lock()
++	defer w.lifecycleMu.Unlock()
++	client, ok := w.myClientPointer[instanceID]
++	return client, ok
++}
++
++func (w whatsmeowService) setMyClient(instanceID string, client *MyClient) {
++	w.lifecycleMu.Lock()
++	defer w.lifecycleMu.Unlock()
++	w.myClientPointer[instanceID] = client
++}
++
++func (w whatsmeowService) newGeneration(instanceID string) *lifecycleGeneration {
++	w.lifecycleMu.Lock()
++	defer w.lifecycleMu.Unlock()
++	ctx, cancel := context.WithCancel(context.Background())
++	generation := &lifecycleGeneration{
++		ctx:    ctx,
++		cancel: cancel,
++		done:   make(chan struct{}),
++	}
++	w.generations[instanceID] = generation
++	w.starting[instanceID] = true
++	return generation
++}
++
++func (w whatsmeowService) generationActive(instanceID string, generation *lifecycleGeneration) bool {
++	w.lifecycleMu.Lock()
++	defer w.lifecycleMu.Unlock()
++	return generation != nil && generation.ctx.Err() == nil && w.generations[instanceID] == generation
++}
++
++func (w whatsmeowService) publishClient(instanceID string, generation *lifecycleGeneration, client *whatsmeow.Client) bool {
++	w.lifecycleMu.Lock()
++	defer w.lifecycleMu.Unlock()
++	if generation == nil || generation.ctx.Err() != nil || w.generations[instanceID] != generation {
++		return false
++	}
++	w.clientPointer[instanceID] = client
++	return true
++}
++
++func (w whatsmeowService) publishMyClient(instanceID string, generation *lifecycleGeneration, client *MyClient) bool {
++	w.lifecycleMu.Lock()
++	defer w.lifecycleMu.Unlock()
++	if generation == nil || generation.ctx.Err() != nil || w.generations[instanceID] != generation {
++		return false
++	}
++	w.myClientPointer[instanceID] = client
++	return true
++}
++
++func (w whatsmeowService) generationStarted(instanceID string, generation *lifecycleGeneration) {
++	w.lifecycleMu.Lock()
++	defer w.lifecycleMu.Unlock()
++	if w.generations[instanceID] == generation {
++		delete(w.starting, instanceID)
++	}
++}
++
++func (w whatsmeowService) finishGeneration(instanceID string, generation *lifecycleGeneration, client *whatsmeow.Client, myClient *MyClient) {
++	generation.beginStop()
++	w.lifecycleMu.Lock()
++	if w.clientPointer[instanceID] == client {
++		delete(w.clientPointer, instanceID)
++	}
++	if w.myClientPointer[instanceID] == myClient {
++		delete(w.myClientPointer, instanceID)
++	}
++	if w.generations[instanceID] == generation {
++		delete(w.generations, instanceID)
++		delete(w.starting, instanceID)
++		delete(w.killChannel, instanceID)
++	}
++	w.lifecycleMu.Unlock()
++	if myClient != nil && client != nil && myClient.eventHandlerID != 0 {
++		client.RemoveEventHandler(myClient.eventHandlerID)
++	}
++	if client != nil {
++		client.Disconnect()
++	}
++	generation.workers.Wait()
++	close(generation.done)
++}
++
++func (w whatsmeowService) signalStopGeneration(instanceID string, generation *lifecycleGeneration) bool {
++	w.lifecycleMu.Lock()
++	if generation == nil || w.generations[instanceID] != generation {
++		w.lifecycleMu.Unlock()
++		return false
++	}
++	w.lifecycleMu.Unlock()
++	generation.beginStop()
++	return true
++}
++
+ type MyClient struct {
+ 	service            WhatsmeowService
+ 	WAClient           *whatsmeow.Client
+@@ -144,9 +325,6 @@ type MyClient struct {
+ 	messageRepository  message_repository.MessageRepository
+ 	labelRepository    label_repository.LabelRepository
+ 	pollService        poll_service.PollService // NOVO: Serviço de enquetes
+-	clientPointer      map[string]*whatsmeow.Client
+-	myClientPointer    map[string]*MyClient
+-	killChannel        map[string](chan bool)
+ 	userInfoCache      *cache.Cache
+ 	config             *config.Config
+ 	historySyncID      int32
+@@ -159,6 +337,11 @@ type MyClient struct {
+ 	loggerWrapper      *logger_wrapper.LoggerManager
+ 	qrcodeCount        int
+ 	passkeyCeremony    *ceremony.Store
++	killSignal         <-chan struct{}
++	generation         *lifecycleGeneration
++	lifecycle          *whatsmeowService
++	qrWait             func(context.Context, time.Duration) bool
++	qrBeforePublish    func(context.Context) bool
+ }
+ 
+ func (mycli *MyClient) persistMessageAsync(message message_model.Message) {
+@@ -201,70 +384,27 @@ type ProxyConfig struct {
+ }
+ 
+ func (w whatsmeowService) ReconnectClient(instanceId string) error {
+-	w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Starting reconnection process - simulating restart", instanceId)
+-
+-	// Passo 1: Limpar conexão existente se houver
+-	if client, exists := w.clientPointer[instanceId]; exists {
+-		w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Disconnecting existing client", instanceId)
+-
+-		// Desconectar o cliente WebSocket
+-		if client.IsConnected() {
+-			client.Disconnect()
+-			w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] WebSocket disconnected", instanceId)
+-		}
++	lock := w.lifecycleLock(instanceId)
++	lock.Lock()
++	defer lock.Unlock()
+ 
+-		// Remover event handler se existir
+-		if mycli, ok := w.myClientPointer[instanceId]; ok {
+-			if mycli.eventHandlerID != 0 {
+-				client.RemoveEventHandler(mycli.eventHandlerID)
+-				w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Event handler removed", instanceId)
+-			}
+-		}
++	client := w.GetClient(instanceId)
++	if client == nil {
++		return w.startInstance(instanceId)
+ 	}
+-
+-	// Passo 2: Limpar todos os recursos da instância
+-	w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Cleaning up resources", instanceId)
+-
+-	// Enviar sinal de kill se o canal existir
+-	if killChan, exists := w.killChannel[instanceId]; exists {
+-		select {
+-		case killChan <- true:
+-			w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Kill signal sent", instanceId)
+-		default:
+-			// Canal pode estar bloqueado, continua
+-		}
++	if client.IsConnected() && client.IsLoggedIn() {
++		return nil
+ 	}
+-
+-	// Remover das estruturas
+-	delete(w.clientPointer, instanceId)
+-	delete(w.myClientPointer, instanceId)
+-	delete(w.killChannel, instanceId)
+-
+-	// Limpar cache de userInfo para esta instância
+-	if instance, err := w.instanceRepository.GetInstanceByID(instanceId); err == nil {
+-		w.userInfoCache.Delete(instance.Token)
+-		w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] UserInfo cache cleared for token: %s", instanceId, instance.Token)
++	if client.IsConnected() && client.Store.ID == nil {
++		return nil
+ 	}
+ 
+-	// Passo 3: Atualizar status no banco
+-	instance, err := w.instanceRepository.GetInstanceByID(instanceId)
+-	if err != nil {
+-		return fmt.Errorf("failed to get instance: %v", err)
++	w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Reconnecting existing WhatsMeow client", instanceId)
++	if client.IsConnected() {
++		client.ResetConnection()
++		return nil
+ 	}
+-
+-	instance.Connected = false
+-	instance.DisconnectReason = "Reconnecting"
+-	err = w.instanceRepository.UpdateConnected(instanceId, false, "Reconnecting")
+-	if err != nil {
+-		w.loggerWrapper.GetLogger(instanceId).LogWarn("[%s] Failed to update disconnect status: %v", instanceId, err)
+-	}
+-
+-	// Passo 4: Aguardar um pouco para garantir limpeza completa
+-	time.Sleep(2 * time.Second)
+-
+-	// Passo 5: Iniciar nova instância como se fosse a primeira vez
+-	w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Starting fresh instance", instanceId)
+-	return w.StartInstance(instanceId)
++	return client.Connect()
+ }
+ 
+ func (w whatsmeowService) ForceUpdateJid(instanceId string, number string) error {
+@@ -323,7 +463,7 @@ func (w whatsmeowService) ForceUpdateJid(instanceId string, number string) error
+ 			if err != nil {
+ 				w.loggerWrapper.GetLogger(instanceId).LogError("[%s] Error updating instance: %v", instanceId, err)
+ 			}
+-			w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Updated instance with latest JID: %s (session: %d)", instanceId, latestJid, latestSession)
++			w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Updated instance with latest stored device identity (session: %d)", instanceId, latestSession)
+ 		}
+ 	}
+ 
+@@ -370,15 +510,24 @@ func (w whatsmeowService) getAuthContainer() (*sqlstore.Container, error) {
+ 	return container, nil
+ }
+ 
+-func (w whatsmeowService) StartClient(cd *ClientData) {
++func (w whatsmeowService) startClient(cd *ClientData, generation *lifecycleGeneration) {
++	var client *whatsmeow.Client
++	var mycli *MyClient
++	defer func() {
++		w.finishGeneration(cd.Instance.Id, generation, client, mycli)
++	}()
++	if !w.generationActive(cd.Instance.Id, generation) {
++		return
++	}
+ 
+ 	w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("Starting websocket connection to Whatsapp for user '%s'", cd.Instance.Id)
++	killSignal := generation.ctx.Done()
+ 
+ 	var deviceStore *store.Device
+ 	var err error
+ 
+-	if w.clientPointer[cd.Instance.Id] != nil {
+-		if w.clientPointer[cd.Instance.Id].IsConnected() {
++	if existing := w.GetClient(cd.Instance.Id); existing != nil {
++		if existing.IsConnected() && existing.IsLoggedIn() {
+ 			return
+ 		}
+ 	}
+@@ -391,7 +540,7 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
+ 
+ 	if cd.Instance.Jid != "" {
+ 		jid, _ := utils.ParseJID(cd.Instance.Jid)
+-		w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Jid found. Getting device store for jid: %s", cd.Instance.Id, jid)
++		w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Stored device identity found", cd.Instance.Id)
+ 		deviceStore, err = container.GetDevice(context.Background(), jid)
+ 		if err != nil {
+ 			w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Erro ao obter device store: %v", cd.Instance.Id, err)
+@@ -455,9 +604,11 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
+ 		minLevel = "INFO" // Nível mínimo para garantir que logs INFO apareçam
+ 	}
+ 	clientLog := waLog.Stdout("Client", minLevel, true)
+-	client := whatsmeow.NewClient(deviceStore, clientLog)
++	client = whatsmeow.NewClient(deviceStore, clientLog)
+ 
+-	w.clientPointer[cd.Instance.Id] = client
++	if !w.publishClient(cd.Instance.Id, generation, client) {
++		return
++	}
+ 
+ 	if cd.IsProxy {
+ 		var proxyConfig ProxyConfig
+@@ -506,10 +657,10 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
+ 		}
+ 	}
+ 
+-	client.EnableAutoReconnect = false
++	client.EnableAutoReconnect = true
+ 	client.AutoTrustIdentity = true
+ 
+-	mycli := &MyClient{
++	mycli = &MyClient{
+ 		service:            &w,
+ 		Instance:           cd.Instance,
+ 		WAClient:           client,
+@@ -526,9 +677,6 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
+ 		labelRepository:    w.labelRepository,
+ 		pollService:        w.pollService, // NOVO: Serviço de enquetes
+ 		userInfoCache:      w.userInfoCache,
+-		clientPointer:      w.clientPointer,
+-		myClientPointer:    w.myClientPointer,
+-		killChannel:        w.killChannel,
+ 		config:             w.config,
+ 		historySyncID:      0,
+ 		rabbitmqProducer:   w.rabbitmqProducer,
+@@ -540,15 +688,23 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
+ 		loggerWrapper:      w.loggerWrapper,
+ 		qrcodeCount:        0,
+ 		passkeyCeremony:    w.passkeyCeremony,
++		killSignal:         killSignal,
++		generation:         generation,
++		lifecycle:          &w,
+ 	}
+ 
+ 	mycli.eventHandlerID = mycli.WAClient.AddEventHandler(mycli.myEventHandler)
+ 
+ 	// Armazena o MyClient no map para permitir atualizações posteriores
+-	w.myClientPointer[cd.Instance.Id] = mycli
++	if !w.publishMyClient(cd.Instance.Id, generation, mycli) {
++		return
++	}
++	if !w.generationActive(cd.Instance.Id, generation) {
++		return
++	}
+ 
+ 	if client.Store.ID != nil {
+-		w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Already logged in with JID: %s", cd.Instance.Id, client.Store.ID.String())
++		w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Stored WhatsApp session found", cd.Instance.Id)
+ 		err = client.Connect()
+ 		if err != nil {
+ 			if strings.Contains(err.Error(), "EOF") {
+@@ -615,67 +771,56 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
+ 
+ 	}
+ 
+-	// Removed auto-reconnect logic to prevent infinite loops
+-
+-	for {
+-		select {
+-		case <-w.killChannel[cd.Instance.Id]:
+-			w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("Received kill signal for user '%s'", cd.Instance.Id)
+-			client.Disconnect()
+-
+-			delete(w.clientPointer, cd.Instance.Id)
+-			delete(w.myClientPointer, cd.Instance.Id)
++	w.generationStarted(cd.Instance.Id, generation)
+ 
+-			// Limpar cache de userInfo para esta instância
+-			w.userInfoCache.Delete(cd.Instance.Token)
+-			w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] UserInfo cache cleared for token: %s", cd.Instance.Id, cd.Instance.Token)
++	select {
++	case <-killSignal:
++		w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("Received kill signal for user '%s'", cd.Instance.Id)
+ 
+-			cd.Instance.Connected = false
++		// Limpar cache de userInfo para esta instância
++		w.userInfoCache.Delete(cd.Instance.Token)
++		w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Runtime user cache cleared", cd.Instance.Id)
+ 
+-			err := w.instanceRepository.UpdateConnected(cd.Instance.Id, cd.Instance.Connected, cd.Instance.DisconnectReason)
+-			if err != nil {
+-				w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Error updating instance: %s", cd.Instance.Id, err)
+-			}
++		cd.Instance.Connected = false
+ 
+-			postMap := make(map[string]interface{})
++		err := w.instanceRepository.UpdateConnected(cd.Instance.Id, cd.Instance.Connected, cd.Instance.DisconnectReason)
++		if err != nil {
++			w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Error updating instance: %s", cd.Instance.Id, err)
++		}
+ 
+-			postMap["event"] = "LoggedOut"
++		postMap := make(map[string]interface{})
+ 
+-			dataMap := make(map[string]interface{})
++		postMap["event"] = "LoggedOut"
+ 
+-			dataMap["reason"] = "Logged out"
++		dataMap := make(map[string]interface{})
+ 
+-			postMap["data"] = dataMap
++		dataMap["reason"] = "Logged out"
+ 
+-			postMap["instanceToken"] = mycli.token
+-			postMap["instanceId"] = mycli.userID
+-			postMap["instanceName"] = cd.Instance.Name
++		postMap["data"] = dataMap
+ 
+-			var queueName string
++		postMap["instanceToken"] = mycli.token
++		postMap["instanceId"] = mycli.userID
++		postMap["instanceName"] = cd.Instance.Name
+ 
+-			if _, ok := postMap["event"]; ok {
+-				queueName = strings.ToLower(fmt.Sprintf("%s.%s", cd.Instance.Id, postMap["event"]))
+-			}
++		var queueName string
+ 
+-			values, err := json.Marshal(postMap)
+-			if err != nil {
+-				w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Failed to marshal JSON for queue", cd.Instance.Id)
+-				return
+-			}
++		if _, ok := postMap["event"]; ok {
++			queueName = strings.ToLower(fmt.Sprintf("%s.%s", cd.Instance.Id, postMap["event"]))
++		}
+ 
+-			go w.CallWebhook(cd.Instance, queueName, values)
++		values, err := json.Marshal(postMap)
++		if err != nil {
++			w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Failed to marshal JSON for queue", cd.Instance.Id)
++			return
++		}
+ 
+-			if mycli.config.AmqpGlobalEnabled || mycli.config.NatsGlobalEnabled {
+-				go mycli.service.SendToGlobalQueues(postMap["event"].(string), values, mycli.userID)
+-			}
++		go w.CallWebhook(cd.Instance, queueName, values)
+ 
+-			// restart client
+-			w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Restarting client", cd.Instance.Id)
+-			w.StartClient(cd)
+-			return
+-		default:
+-			time.Sleep(1000 * time.Millisecond)
++		if mycli.config.AmqpGlobalEnabled || mycli.config.NatsGlobalEnabled {
++			go mycli.service.SendToGlobalQueues(postMap["event"].(string), values, mycli.userID)
+ 		}
++
++		return
+ 	}
+ }
+ 
+@@ -699,7 +844,7 @@ func schedulePresenceUpdates(mycli *MyClient) {
+ 			randomInterval := time.Duration(1+rand.Intn(3)) * time.Hour
+ 			ticker = time.NewTicker(randomInterval)
+ 
+-		case <-mycli.killChannel[mycli.userID]:
++		case <-mycli.killSignal:
+ 			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Received kill signal, stopping presence updates", mycli.userID)
+ 			return // Encerra a goroutine quando receber sinal de kill
+ 		}
+@@ -745,10 +890,34 @@ func processPresenceUpdates(mycli *MyClient) {
+ // fan-out) and the timeout teardown; only the trigger (batch vs. per-code) and
+ // the rotation/self-timer are new. Runs in its own goroutine so it never blocks
+ // the whatsmeow event dispatch.
++func (mycli *MyClient) waitQR(ctx context.Context, duration time.Duration) bool {
++	if mycli.qrWait != nil {
++		return mycli.qrWait(ctx, duration)
++	}
++	timer := time.NewTimer(duration)
++	defer timer.Stop()
++	select {
++	case <-ctx.Done():
++		return false
++	case <-timer.C:
++		return true
++	}
++}
++
++func (mycli *MyClient) generationCurrent() bool {
++	return mycli.lifecycle != nil && mycli.lifecycle.generationActive(mycli.userID, mycli.generation)
++}
++
+ func (mycli *MyClient) handleQRCodes(codes []string) {
+-	go func() {
++	if mycli.generation == nil {
++		return
++	}
++	mycli.generation.startQR(func(ctx context.Context) {
+ 		instanceID := mycli.userID
+ 		for i, code := range codes {
++			if ctx.Err() != nil || !mycli.generationCurrent() {
++				return
++			}
+ 			// A successful pair (Store.ID set) or an in-flight passkey ceremony
+ 			// supersedes QR — stop rotating WITHOUT tearing down. Store.ID stays
+ 			// nil throughout a passkey ceremony (it is only set at PairSuccess),
+@@ -779,6 +948,9 @@ func (mycli *MyClient) handleQRCodes(codes []string) {
+ 				}
+ 				mycli.loggerWrapper.GetLogger(instanceID).LogWarn("[%s] Maximum QR code count reached (%d), forcing logout and QRTimeout", instanceID, mycli.config.QrcodeMaxCount)
+ 
++				if !mycli.generationCurrent() {
++					return
++				}
+ 				if mycli.WAClient.IsConnected() {
+ 					if err := mycli.WAClient.Logout(context.Background()); err != nil {
+ 						mycli.loggerWrapper.GetLogger(instanceID).LogWarn("[%s] Error during forced logout: %v", instanceID, err)
+@@ -788,17 +960,22 @@ func (mycli *MyClient) handleQRCodes(codes []string) {
+ 				return
+ 			}
+ 
+-			if mycli.config.LogType != "json" {
+-				fmt.Println("QR code:\n", code)
+-			}
+-
+ 			image, _ := qrcode.Encode(code, qrcode.Medium, 256)
+ 			base64qrcode := "data:image/png;base64," + base64.StdEncoding.EncodeToString(image)
+ 			base64WithCode := base64qrcode + "|" + code
+ 
++			if mycli.qrBeforePublish != nil && !mycli.qrBeforePublish(ctx) {
++				return
++			}
++			if !mycli.generationCurrent() {
++				return
++			}
+ 			if err := mycli.instanceRepository.UpdateQrcode(instanceID, base64WithCode); err != nil {
+ 				mycli.loggerWrapper.GetLogger(instanceID).LogError("[%s] Error updating instance: %s", instanceID, err)
+ 			}
++			if !mycli.generationCurrent() {
++				return
++			}
+ 
+ 			postMap := map[string]interface{}{
+ 				"event": "QRCode",
+@@ -814,9 +991,15 @@ func (mycli *MyClient) handleQRCodes(codes []string) {
+ 			}
+ 			queueName := strings.ToLower(fmt.Sprintf("%s.%s", instanceID, "QRCode"))
+ 			if values, err := json.Marshal(postMap); err == nil {
+-				go mycli.service.CallWebhook(mycli.Instance, queueName, values)
++				if !mycli.generationCurrent() {
++					return
++				}
++				mycli.service.CallWebhook(mycli.Instance, queueName, values)
+ 				if mycli.config.AmqpGlobalEnabled || mycli.config.NatsGlobalEnabled {
+-					go mycli.service.SendToGlobalQueues("QRCode", values, instanceID)
++					if !mycli.generationCurrent() {
++						return
++					}
++					mycli.service.SendToGlobalQueues("QRCode", values, instanceID)
+ 				}
+ 			} else {
+ 				mycli.loggerWrapper.GetLogger(instanceID).LogError("[%s] Failed to marshal JSON for queue", instanceID)
+@@ -827,41 +1010,42 @@ func (mycli *MyClient) handleQRCodes(codes []string) {
+ 			if i == 0 {
+ 				timeout = 60 * time.Second
+ 			}
+-			time.Sleep(timeout)
++			if !mycli.waitQR(ctx, timeout) {
++				return
++			}
+ 		}
+ 
+ 		// Ran out of codes without a PairSuccess. Treat as QR timeout (mirrors
+ 		// GetQRChannel's "timeout") — UNLESS a passkey ceremony is in flight, in
+ 		// which case the socket must stay alive for the ceremony to complete.
+-		if mycli.WAClient != nil && mycli.WAClient.Store.ID == nil {
++		if mycli.generationCurrent() && mycli.WAClient != nil && mycli.WAClient.Store.ID == nil {
+ 			if mycli.passkeyCeremony != nil && mycli.passkeyCeremony.HasActiveByInstance(instanceID) {
+ 				mycli.loggerWrapper.GetLogger(instanceID).LogInfo("[%s] QR codes exhausted but passkey ceremony active — keeping socket alive", instanceID)
+ 				return
+ 			}
+ 			mycli.teardownQR("", false)
+ 		}
+-	}()
++	})
+ }
+ 
+-// teardownQR clears the QR state and emits a QRTimeout event, then signals the
+-// kill channel so StartClient's select loop performs the actual disconnect and
+-// map cleanup. IMPORTANT: this method must NOT delete from the shared
+-// clientPointer/myClientPointer/killChannel maps itself — those are unsynchronized
+-// service-wide maps and this runs in the handleQRCodes goroutine; doing the
+-// delete()s here (concurrent with other instances' goroutines and the whatsmeow
+-// dispatch) risks a `fatal error: concurrent map writes`. The kill-channel send
+-// is blocking (like the original GetQRChannel timeout branch) so the signal is
+-// never dropped and the socket can't be orphaned. Cleanup happens in the
+-// StartClient goroutine, the single writer of those maps for this instance.
++// teardownQR clears the QR state and emits a QRTimeout event, then cancels the
++// current lifecycle generation. The generation owner removes the handler and
++// runtime maps before acknowledging shutdown.
+ // If reason is non-empty it is included in the QRTimeout payload (max-count path).
+ func (mycli *MyClient) teardownQR(reason string, forceLogout bool) {
+ 	instanceID := mycli.userID
++	if !mycli.generationCurrent() {
++		return
++	}
+ 
+ 	if err := mycli.instanceRepository.UpdateQrcode(instanceID, ""); err != nil {
+ 		mycli.loggerWrapper.GetLogger(instanceID).LogError("[%s] Error updating instance: %s", instanceID, err)
+ 	}
+ 
+ 	if reason != "" {
++		if !mycli.generationCurrent() {
++			return
++		}
+ 		if err := mycli.instanceRepository.UpdateConnected(instanceID, false, reason); err != nil {
+ 			mycli.loggerWrapper.GetLogger(instanceID).LogError("[%s] Error updating instance status: %v", instanceID, err)
+ 		}
+@@ -883,9 +1067,15 @@ func (mycli *MyClient) teardownQR(reason string, forceLogout bool) {
+ 	}
+ 	queueName := strings.ToLower(fmt.Sprintf("%s.%s", instanceID, "QRTimeout"))
+ 	if values, err := json.Marshal(postMap); err == nil {
+-		go mycli.service.CallWebhook(mycli.Instance, queueName, values)
++		if !mycli.generationCurrent() {
++			return
++		}
++		mycli.service.CallWebhook(mycli.Instance, queueName, values)
+ 		if mycli.config.AmqpGlobalEnabled || mycli.config.NatsGlobalEnabled {
+-			go mycli.service.SendToGlobalQueues("QRTimeout", values, instanceID)
++			if !mycli.generationCurrent() {
++				return
++			}
++			mycli.service.SendToGlobalQueues("QRTimeout", values, instanceID)
+ 		}
+ 	}
+ 
+@@ -893,9 +1083,7 @@ func (mycli *MyClient) teardownQR(reason string, forceLogout bool) {
+ 	// maps (it is the single writer for this instance). Blocking send mirrors
+ 	// the original timeout branch so the signal is never dropped.
+ 	mycli.loggerWrapper.GetLogger(instanceID).LogWarn("[%s] QR timeout — signaling kill channel", instanceID)
+-	if killChan, exists := mycli.killChannel[instanceID]; exists {
+-		killChan <- true
+-	}
++	mycli.lifecycle.signalStopGeneration(instanceID, mycli.generation)
+ }
+ 
+ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+@@ -950,18 +1138,6 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 			dataMap["jid"] = mycli.WAClient.Store.ID.String()
+ 			dataMap["pushName"] = mycli.WAClient.Store.PushName
+ 
+-			// jid, ok := utils.ParseJID(mycli.WAClient.Store.ID.ToNonAD().User)
+-			// if ok {
+-			// 	profilePicUrl, err := mycli.clientPointer[mycli.userID].GetProfilePictureInfo(jid, &whatsmeow.GetProfilePictureParams{
+-			// 		Preview: false,
+-			// 	})
+-			// 	if err != nil {
+-			// 		w.loggerWrapper.GetLogger(instanceId).LogError("[%s] Failed to get profile picture info: %v", mycli.userID, err)
+-			// 	} else {
+-			// 		dataMap["profilePicUrl"] = profilePicUrl.URL
+-			// 	}
+-			// }
+-
+ 			postMap["data"] = dataMap
+ 
+ 			// Respect the alwaysOnline instance flag. Previously the device was marked
+@@ -971,7 +1147,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 			// the user's phone. When alwaysOnline is false we now send Unavailable instead.
+ 			var err error
+ 			if mycli.Instance.AlwaysOnline {
+-				go schedulePresenceUpdates(mycli)
++				mycli.generation.startPresence(mycli)
+ 
+ 				err = mycli.WAClient.SendPresence(context.Background(), types.PresenceAvailable)
+ 				if err != nil {
+@@ -1003,7 +1179,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 	case *events.PairSuccess:
+ 		doWebhook = true
+ 		postMap["event"] = "PairSuccess"
+-		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("QR Pair Success for user '%s' with JID '%s' - '%s'", mycli.userID, evt.ID.String(), mycli.WAClient.Store.ID.String())
++		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] QR pair succeeded", mycli.userID)
+ 
+ 		instance, err := mycli.instanceRepository.GetInstanceByID(mycli.userID)
+ 		if err != nil {
+@@ -1015,7 +1191,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 		instance.DisconnectReason = ""
+ 		instance.Jid = mycli.WAClient.Store.ID.String()
+ 
+-		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Updating JID: %s in Instance: %s", mycli.userID, mycli.WAClient.Store.ID.String(), instance.Jid)
++		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Updating stored device identity", mycli.userID)
+ 
+ 		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Attempting to update instance in DB: %+v", mycli.userID, instance)
+ 		err = mycli.instanceRepository.Update(instance)
+@@ -1102,8 +1278,8 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 		openURL := "https://web.whatsapp.com/#wapk=" + wapk
+ 
+ 		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo(
+-			"[%s] Passkey required. Open this URL in a browser with the Evolution Passkey Helper extension:\n%s\n(ceremony token=%s, base=%s)",
+-			mycli.userID, openURL, token, publicBase,
++			"[%s] Passkey ceremony required; sensitive ceremony data omitted from logs",
++			mycli.userID,
+ 		)
+ 
+ 		// Surface the ceremony info to webhooks/queues so the manager UI can
+@@ -1194,7 +1370,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 			messageSize = fmt.Sprintf("%d bytes", *evt.Message.GetAudioMessage().FileLength)
+ 		}
+ 
+-		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] ===== MESSAGE RECEIVED ===== ID: %s, From: %s, Type: %s, Size: %s", mycli.userID, evt.Info.ID, evt.Info.Chat.String(), evt.Info.Type, messageSize)
++		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] ===== MESSAGE RECEIVED ===== ID: %s, Type: %s, Size: %s", mycli.userID, evt.Info.ID, evt.Info.Type, messageSize)
+ 
+ 		// se readMessages for true ele marca como lida
+ 		if mycli.Instance.ReadMessages {
+@@ -1203,7 +1379,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 			if err != nil {
+ 				mycli.loggerWrapper.GetLogger(mycli.userID).LogError("[%s] Failed to auto-mark message as read: %v", mycli.userID, err)
+ 			} else {
+-				mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Auto-marked message as read from %s", mycli.userID, evt.Info.Chat.String())
++				mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Auto-marked message as read", mycli.userID)
+ 			}
+ 		}
+ 
+@@ -1234,7 +1410,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 		chatStr := evt.Info.Chat.String()
+ 
+ 		if strings.Contains(senderStr, "@lid") && strings.Contains(senderAltStr, "@s.whatsapp.net") {
+-			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Detected LID/WhatsApp JID swap case - Sender: %s, SenderAlt: %s", mycli.userID, senderStr, senderAltStr)
++			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Detected alternate device identity mapping", mycli.userID)
+ 
+ 			// Limpa os IDs antes de fazer a troca
+ 			cleanSenderAlt := cleanSenderID(senderAltStr)
+@@ -1253,8 +1429,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 				evt.Info.SenderAlt = cleanedLID
+ 			}
+ 
+-			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] JID swap completed - New Sender: %s, New SenderAlt: %s, New Chat: %s",
+-				mycli.userID, evt.Info.Sender.String(), evt.Info.SenderAlt.String(), evt.Info.Chat.String())
++			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Alternate device identity mapping completed", mycli.userID)
+ 		} else {
+ 			// Comportamento normal: apenas limpa os IDs
+ 			cleanSender := cleanSenderID(senderStr)
+@@ -1276,7 +1451,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 				if err != nil {
+ 					mycli.loggerWrapper.GetLogger(mycli.userID).LogError("[%s] Failed to auto-mark message as read: %v", mycli.userID, err)
+ 				} else {
+-					mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Auto-marked message as read from %s", mycli.userID, evt.Info.Chat.String())
++					mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Auto-marked message as read", mycli.userID)
+ 				}
+ 			}()
+ 		}
+@@ -1314,15 +1489,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 		referral := extractReferralFromMessage(evt.Message)
+ 
+ 		if evt.Message.GetPollUpdateMessage() != nil {
+-			fmt.Printf("[POLL DEBUG] 🎯 PollUpdateMessage detected!\n")
+-			fmt.Printf("[POLL DEBUG] � BEFORE accessing evt.Info - Sender: %s, Server: %s\n", evt.Info.Sender.String(), evt.Info.Sender.Server)
+-			fmt.Printf("[POLL DEBUG] 📍 BEFORE accessing evt.Info - SenderAlt: %s\n", evt.Info.SenderAlt.String())
+-			fmt.Printf("[POLL DEBUG] �� mycli.WAClient is nil: %v\n", mycli.WAClient == nil)
+-			if mycli.WAClient != nil {
+-				fmt.Printf("[POLL DEBUG] ✅ mycli.WAClient is initialized: %s\n", mycli.WAClient.Store.ID)
+-			}
+-
+-			decrypted, err := mycli.clientPointer[mycli.userID].DecryptPollVote(context.Background(), evt)
++			decrypted, err := mycli.WAClient.DecryptPollVote(context.Background(), evt)
+ 			if err != nil {
+ 				mycli.loggerWrapper.GetLogger(mycli.userID).LogError("[%s] Failed to decrypt vote: %v", mycli.userID, err)
+ 			} else {
+@@ -1616,7 +1783,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 							// Continue processing without storage URL
+ 							mycli.loggerWrapper.GetLogger(mycli.userID).LogWarn("[%s] Continuing message processing without S3 URL - ID: %s", mycli.userID, evt.Info.ID)
+ 						} else {
+-							mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] S3/Minio upload successful - ID: %s, Size: %d bytes, Duration: %v, URL: %s", mycli.userID, evt.Info.ID, len(data), storageDuration, mediaURL)
++							mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] S3/Minio upload successful - ID: %s, Size: %d bytes, Duration: %v", mycli.userID, evt.Info.ID, len(data), storageDuration)
+ 							messageMap["mediaUrl"] = mediaURL
+ 							messageMap["mimetype"] = mimeType
+ 						}
+@@ -1773,7 +1940,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 			}
+ 		}
+ 
+-		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] ===== MESSAGE PROCESSING COMPLETED ===== ID: %s, From: %s, Type: %s, Webhook: %v", mycli.userID, evt.Info.ID, evt.Info.Chat.String(), evt.Info.Type, doWebhook)
++		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] ===== MESSAGE PROCESSING COMPLETED ===== ID: %s, Type: %s, Webhook: %v", mycli.userID, evt.Info.ID, evt.Info.Type, doWebhook)
+ 	case *events.Receipt:
+ 		doWebhook = true
+ 		postMap["event"] = "Receipt"
+@@ -1787,11 +1954,11 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 			return
+ 		}
+ 
+-		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Receipt received with ID: %s from %s with type %s", mycli.userID, evt.MessageIDs[0], evt.SourceString(), evt.Type)
++		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Receipt received with ID: %s and type %s", mycli.userID, evt.MessageIDs[0], evt.Type)
+ 
+ 		if evt.Type == types.ReceiptTypeRead || evt.Type == types.ReceiptTypeReadSelf {
+ 
+-			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Message was read by %s", mycli.userID, evt.SourceString())
++			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Message was read", mycli.userID)
+ 			if evt.Type == types.ReceiptTypeRead {
+ 				postMap["state"] = "Read"
+ 				for _, v := range evt.MessageIDs {
+@@ -1839,7 +2006,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 				mycli.persistMessageAsync(message)
+ 			}
+ 
+-			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Message delivered to %s", mycli.userID, evt.SourceString())
++			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Message delivered", mycli.userID)
+ 		} else {
+ 			return
+ 		}
+@@ -1884,7 +2051,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 
+ 		// Limpar cache de userInfo para esta instância
+ 		mycli.userInfoCache.Delete(mycli.Instance.Token)
+-		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] UserInfo cache cleared for token: %s", mycli.userID, mycli.Instance.Token)
++		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Runtime user cache cleared", mycli.userID)
+ 
+ 		mycli.Instance.DisconnectReason = evt.Reason.String()
+ 		mycli.Instance.Connected = false
+@@ -1942,7 +2109,9 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 		}
+ 
+ 		// Agora mata o canal DEPOIS de enviar o evento
+-		mycli.killChannel[mycli.userID] <- true
++		if mycli.lifecycle != nil {
++			mycli.lifecycle.signalStopGeneration(mycli.userID, mycli.generation)
++		}
+ 	case *events.ChatPresence:
+ 		doWebhook = true
+ 		postMap["event"] = "ChatPresence"
+@@ -1953,7 +2122,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 
+ 		// Verifica se deve rejeitar chamadas automaticamente
+ 		if mycli.Instance.RejectCall {
+-			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Auto-rejecting call from %s", mycli.userID, evt.CallCreator.String())
++			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Auto-rejecting call", mycli.userID)
+ 
+ 			// Rejeita a chamada
+ 			mycli.WAClient.RejectCall(context.Background(), evt.CallCreator, evt.CallID)
+@@ -1970,7 +2139,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 				if err != nil {
+ 					mycli.loggerWrapper.GetLogger(mycli.userID).LogError("[%s] Failed to send reject call message: %v", mycli.userID, err)
+ 				} else {
+-					mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Sent reject call message to %s", mycli.userID, evt.CallCreator.String())
++					mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Sent reject call message", mycli.userID)
+ 				}
+ 			}
+ 			return
+@@ -2003,7 +2172,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 
+ 		// Limpar cache de userInfo para esta instância
+ 		mycli.userInfoCache.Delete(mycli.Instance.Token)
+-		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] UserInfo cache cleared for token: %s", mycli.userID, mycli.Instance.Token)
++		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Runtime user cache cleared", mycli.userID)
+ 
+ 		mycli.Instance.DisconnectReason = evt.Reason.String()
+ 		mycli.Instance.Connected = false
+@@ -2017,7 +2186,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 
+ 		// Limpar cache de userInfo para esta instância (mas não para reconexão automática)
+ 		mycli.userInfoCache.Delete(mycli.Instance.Token)
+-		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] UserInfo cache cleared for token: %s", mycli.userID, mycli.Instance.Token)
++		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Runtime user cache cleared", mycli.userID)
+ 
+ 		mycli.Instance.DisconnectReason = "Disconnected emitted because the websocket is closed by the server."
+ 		mycli.Instance.Connected = false
+@@ -2026,13 +2195,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 			mycli.loggerWrapper.GetLogger(mycli.userID).LogError("[%s] Error updating instance: %s", mycli.Instance.Id, err)
+ 		}
+ 
+-		// Trigger instance restart via websocket-capable service (non-blocking)
+-		go func(instanceID string) {
+-			mycli.loggerWrapper.GetLogger(instanceID).LogInfo("[%s] Disconnected detected, restarting instance", instanceID)
+-			if err := mycli.service.ReconnectClient(instanceID); err != nil {
+-				mycli.loggerWrapper.GetLogger(instanceID).LogError("[%s] Failed to restart instance: %v", instanceID, err)
+-			}
+-		}(mycli.userID)
++		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Disconnected; WhatsMeow native reconnect remains active", mycli.userID)
+ 	case *events.LabelEdit:
+ 		doWebhook = true
+ 		postMap["event"] = "LabelEdit"
+@@ -2366,6 +2529,34 @@ func (w *whatsmeowService) sendToQueueOrWebhook(instance *instance_model.Instanc
+ }
+ 
+ func (w whatsmeowService) StartInstance(instanceId string) error {
++	lock := w.lifecycleLock(instanceId)
++	lock.Lock()
++	defer lock.Unlock()
++	return w.startInstance(instanceId)
++}
++
++func (w whatsmeowService) startInstance(instanceId string) error {
++	w.lifecycleMu.Lock()
++	if w.starting[instanceId] || w.generations[instanceId] != nil {
++		w.lifecycleMu.Unlock()
++		return nil
++	}
++	if client := w.clientPointer[instanceId]; client != nil {
++		w.lifecycleMu.Unlock()
++		if client.IsConnected() && client.IsLoggedIn() {
++			return nil
++		}
++		if client.IsConnected() && client.Store.ID == nil {
++			return nil
++		}
++		if client.IsConnected() {
++			client.ResetConnection()
++			return nil
++		}
++		return client.Connect()
++	}
++	w.lifecycleMu.Unlock()
++
+ 	instance, err := w.instanceRepository.GetInstanceByID(instanceId)
+ 	if err != nil {
+ 		return err
+@@ -2427,8 +2618,6 @@ func (w whatsmeowService) StartInstance(instanceId string) error {
+ 		}
+ 	}
+ 
+-	w.killChannel[instance.Id] = make(chan bool)
+-
+ 	clientData := &ClientData{
+ 		Instance:      instance,
+ 		Subscriptions: subscribedEvents,
+@@ -2449,7 +2638,8 @@ func (w whatsmeowService) StartInstance(instanceId string) error {
+ 		}
+ 	}
+ 
+-	go w.StartClient(clientData)
++	generation := w.newGeneration(instance.Id)
++	go w.startClient(clientData, generation)
+ 
+ 	return nil
+ }
+@@ -2728,7 +2918,7 @@ func (w whatsmeowService) UpdateInstanceSettings(instanceId string) error {
+ 	}
+ 
+ 	// Verifica se o MyClient existe
+-	myClient, exists := w.myClientPointer[instanceId]
++	myClient, exists := w.getMyClient(instanceId)
+ 	if !exists {
+ 		w.loggerWrapper.GetLogger(instanceId).LogWarn("[%s] MyClient not found in runtime, instance may not be connected", instanceId)
+ 		return fmt.Errorf("instance %s not found in runtime", instanceId)
+@@ -2787,7 +2977,7 @@ func (w whatsmeowService) UpdateInstanceAdvancedSettings(instanceId string) erro
+ 	}
+ 
+ 	// Verifica se o MyClient existe
+-	myClient, exists := w.myClientPointer[instanceId]
++	myClient, exists := w.getMyClient(instanceId)
+ 	if !exists {
+ 		w.loggerWrapper.GetLogger(instanceId).LogWarn("[%s] MyClient not found in runtime, instance may not be connected", instanceId)
+ 		return fmt.Errorf("instance %s not found in runtime", instanceId)
+@@ -2801,38 +2991,60 @@ func (w whatsmeowService) UpdateInstanceAdvancedSettings(instanceId string) erro
+ }
+ 
+ func (w whatsmeowService) ClearInstanceCache(instanceId string, token string) error {
+-	w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Clearing instance cache - Token: %s", instanceId, token)
++	lock := w.lifecycleLock(instanceId)
++	lock.Lock()
++	defer lock.Unlock()
++	return w.stopInstance(instanceId, token, false)
++}
++
++func (w whatsmeowService) StopInstance(instanceId string, token string, logout bool) error {
++	lock := w.lifecycleLock(instanceId)
++	lock.Lock()
++	defer lock.Unlock()
++	return w.stopInstance(instanceId, token, logout)
++}
++
++func (w whatsmeowService) stopInstance(instanceId string, token string, logout bool) error {
++	w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Clearing instance runtime cache", instanceId)
+ 
+-	// Limpar userInfoCache
+ 	w.userInfoCache.Delete(token)
+ 
+-	// Limpar myClientPointer se existir
+-	if _, exists := w.myClientPointer[instanceId]; exists {
+-		delete(w.myClientPointer, instanceId)
+-		w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] MyClient pointer cleared", instanceId)
++	w.lifecycleMu.Lock()
++	generation := w.generations[instanceId]
++	client := w.clientPointer[instanceId]
++	myClient := w.myClientPointer[instanceId]
++	delete(w.killChannel, instanceId)
++	delete(w.starting, instanceId)
++	w.lifecycleMu.Unlock()
++	if generation != nil {
++		generation.beginStop()
+ 	}
+ 
+-	// Limpar clientPointer se existir
+-	if _, exists := w.clientPointer[instanceId]; exists {
+-		delete(w.clientPointer, instanceId)
+-		w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Client pointer cleared", instanceId)
++	var logoutErr error
++	if client != nil {
++		if logout && client.IsLoggedIn() {
++			logoutErr = client.Logout(context.Background())
++		}
++		client.Disconnect()
+ 	}
+-
+-	// Limpar killChannel se existir
+-	if killChan, exists := w.killChannel[instanceId]; exists {
+-		select {
+-		case killChan <- true:
+-			// Canal recebeu o sinal
+-		default:
+-			// Canal pode estar bloqueado, apenas fecha
++	if generation != nil {
++		<-generation.done
++	} else {
++		if myClient != nil && client != nil && myClient.eventHandlerID != 0 {
++			client.RemoveEventHandler(myClient.eventHandlerID)
++		}
++		w.lifecycleMu.Lock()
++		if w.clientPointer[instanceId] == client {
++			delete(w.clientPointer, instanceId)
+ 		}
+-		close(killChan)
+-		delete(w.killChannel, instanceId)
+-		w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Kill channel cleared", instanceId)
++		if w.myClientPointer[instanceId] == myClient {
++			delete(w.myClientPointer, instanceId)
++		}
++		w.lifecycleMu.Unlock()
+ 	}
+ 
+ 	w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Instance cache completely cleared", instanceId)
+-	return nil
++	return logoutErr
+ }
+ 
+ func NewWhatsmeowService(
+@@ -2877,6 +3089,10 @@ func NewWhatsmeowService(
+ 		natsProducer:       natsProducer,
+ 		loggerWrapper:      loggerWrapper,
+ 		passkeyCeremony:    ceremony.NewStore(),
++		lifecycleMu:        &sync.Mutex{},
++		lifecycleLocks:     make(map[string]*sync.Mutex),
++		starting:           make(map[string]bool),
++		generations:        make(map[string]*lifecycleGeneration),
+ 	}
+ }
+ 
+@@ -2894,8 +3110,8 @@ func (w *whatsmeowService) PasskeyCeremonyStore() *ceremony.Store {
+ // SubmitPasskeyResponse forwards the browser's WebAuthn assertion to WhatsApp
+ // for the given instance. Called by POST /passkey-ceremony/{token}/response.
+ func (w *whatsmeowService) SubmitPasskeyResponse(instanceId string, resp *types.WebAuthnResponse) error {
+-	client, ok := w.clientPointer[instanceId]
+-	if !ok || client == nil {
++	client := w.GetClient(instanceId)
++	if client == nil {
+ 		return fmt.Errorf("no active client for instance %s", instanceId)
+ 	}
+ 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+@@ -2913,8 +3129,8 @@ func (w *whatsmeowService) SubmitPasskeyResponse(instanceId string, resp *types.
+ // ConfirmPasskey finishes the pairing after the user verified the code.
+ // Called by POST /passkey-ceremony/{token}/confirm.
+ func (w *whatsmeowService) ConfirmPasskey(instanceId string) error {
+-	client, ok := w.clientPointer[instanceId]
+-	if !ok || client == nil {
++	client := w.GetClient(instanceId)
++	if client == nil {
+ 		return fmt.Errorf("no active client for instance %s", instanceId)
+ 	}
+ 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)

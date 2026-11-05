@@ -1,0 +1,6 @@
+=== RUN   TestHandshakeVersionLiveQR
+    handshake_version_test.go:64: handshake version: 2.3000.1053100174
+    handshake_version_test.go:100: WhatsApp accepted the fresh handshake and returned 6 QR codes (contents omitted)
+--- PASS: TestHandshakeVersionLiveQR (1.25s)
+PASS
+ok  	github.com/evolution-foundation/evolution-go/pkg/whatsmeow/service	1.266s

@@ -1,0 +1,27 @@
+The push refers to repository [docker.io/nandocosta/evolution-go]
+f868d2ea442a: Preparing
+817bf62bb348: Preparing
+17fb31c03d7f: Preparing
+e137130b42e3: Preparing
+8baf883ba3c1: Preparing
+885f03a90dc3: Preparing
+6e6561eb870f: Preparing
+f85d1ef48967: Preparing
+1b4c6c19b7c7: Preparing
+54ea9baa1bbd: Preparing
+885f03a90dc3: Waiting
+6e6561eb870f: Waiting
+f85d1ef48967: Waiting
+1b4c6c19b7c7: Waiting
+54ea9baa1bbd: Waiting
+e137130b42e3: Pushed
+f868d2ea442a: Pushed
+17fb31c03d7f: Pushed
+817bf62bb348: Pushed
+8baf883ba3c1: Pushed
+f85d1ef48967: Layer already exists
+1b4c6c19b7c7: Layer already exists
+54ea9baa1bbd: Layer already exists
+885f03a90dc3: Pushed
+6e6561eb870f: Pushed
+0.7.2-nc.3: digest: sha256:5bc9b1d6dd55d018b07623495a1e3c9bad938bd649f5559caf676d726dcea2e2 size: 2406

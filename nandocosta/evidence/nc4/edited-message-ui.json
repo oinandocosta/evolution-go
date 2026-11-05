@@ -1,0 +1,42 @@
+{
+  "route": "atendimentos.exibir",
+  "render": "Real Laravel controller and Blade response; exported locally by isolated PHPUnit fixture",
+  "browser": "Microsoft Edge native extension, current user profile",
+  "database": "SQLite :memory: only, TestCase createApplication guard active",
+  "production_data_used": false,
+  "synthetic_messages": 3,
+  "desktop": {
+    "width": 1912,
+    "height": 863,
+    "page_horizontal_overflow": false,
+    "message_original_horizontal_overflow": false,
+    "summary_height_px": 40,
+    "native_marker": "none",
+    "history_icon_rendered": true
+  },
+  "mobile": {
+    "width": 390,
+    "height": 844,
+    "page_horizontal_overflow": false,
+    "message_original_horizontal_overflow": false,
+    "multiline_and_unbroken_url_verified": true
+  },
+  "interactions": {
+    "click_expands": true,
+    "enter_expands": true,
+    "space_collapses": true,
+    "native_ax_expanded_collapsed_announced": true,
+    "keyboard_focus_visible": true,
+    "focus_outline": "rgb(22, 119, 255) solid 2px"
+  },
+  "console_errors": [],
+  "console_warnings": [],
+  "screenshots": "Desktop and mobile screenshots inspected inline through cua_repl",
+  "viewport_restored": true,
+  "test_tab_closed": true,
+  "cua_completion_summary_emitted": true,
+  "render_fixture_test": {"tests": 1, "assertions": 3, "passed": true},
+  "php_lint_passed": true,
+  "git_diff_check_passed": true,
+  "design_detector": "Only pre-existing warnings outside changed selectors; none in new message-original CSS/markup"
+}

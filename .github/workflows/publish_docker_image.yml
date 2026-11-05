@@ -1,61 +1,185 @@
-name: Build and Publish Docker Image
+# Native AMD64 and ARM64 runners; manual build-only mode requires no registry secrets.
+# Both native jobs must pass before optional pushes. Existing release tags are refused.
+# QR/PostgreSQL opt-in fixtures are separate; artifacts state the coverage explicitly.
+# Promotion of latest is intentionally a separate manual action.
+name: Build nandocosta Docker Image
 
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish a NEW version only after both native jobs pass
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-release-${{ github.repository }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  IMAGE_REPOSITORY: nandocosta/evolution-go
 
 jobs:
-  build_deploy:
-    name: Build and Deploy
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+  preflight:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Read version
+      - uses: actions/checkout@v4
+      - name: Validate release version
         id: version
-        run: echo "version=$(cat VERSION 2>/dev/null || echo '0.0.0')" >> $GITHUB_OUTPUT
+        run: |
+          version="$(cat VERSION)"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-nc\.[0-9]+$ ]]
+          jq -e --arg version "$version" '.version == $version and .image == ("nandocosta/evolution-go:" + $version)' nandocosta/RELEASE.json
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Test public repository guard
+        run: python3 -B -m unittest discover -s nandocosta -p test_public_repository.py -v
+      - name: Require public repository and unused release tags
+        if: ${{ inputs.publish }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python3 -B nandocosta/check-public-repository.py
+          for tag in "$VERSION" "$VERSION-amd64" "$VERSION-arm64"; do
+            status="$(curl --silent --show-error --max-time 20 --output /dev/null --write-out '%{http_code}' "https://hub.docker.com/v2/repositories/$IMAGE_REPOSITORY/tags/$tag/")"
+            [[ "$status" == 404 ]] || { echo "Refusing existing or unverified tag $tag (HTTP $status)"; exit 1; }
+          done
 
-      - name: Docker meta
-        id: meta
-        uses: docker/metadata-action@v5
+  native:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+            machine: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            machine: aarch64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+      ARCH: ${{ matrix.arch }}
+      EXPECTED_MACHINE: ${{ matrix.machine }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require native host and local Docker builder
+        run: |
+          [[ "$(uname -m)" == "$EXPECTED_MACHINE" ]]
+          mkdir -p build/native-release
+          docker buildx inspect default --bootstrap | tee build/native-release/builder.log
+          grep -Eq '^Driver:[[:space:]]+docker[[:space:]]*$' build/native-release/builder.log
+          echo "VERIFY_IMAGE=evolution-go-verify:$VERSION-$ARCH" >> "$GITHUB_ENV"
+          echo "RUNTIME_IMAGE=evolution-go:$VERSION-$ARCH" >> "$GITHUB_ENV"
+          echo "RUNTIME_TEST_IMAGE=evolution-go-runtime-tests:$VERSION-$ARCH" >> "$GITHUB_ENV"
+      - name: Build canonical verification and final images with every gate
+        run: |
+          # The unmodified canonical verification stage runs go test, vet and race.
+          docker buildx build --builder default --platform "linux/$ARCH" --target verification --load --progress plain --build-arg "VERSION=$VERSION" --metadata-file build/native-release/verification-build.json -t "$VERIFY_IMAGE" . 2>&1 | tee build/native-release/verification-build.log
+          docker buildx build --builder default --platform "linux/$ARCH" --load --progress plain --build-arg "VERSION=$VERSION" --metadata-file build/native-release/final-build.json -t "$RUNTIME_IMAGE" . 2>&1 | tee build/native-release/final-build.log
+          [[ "$(docker image inspect "$VERIFY_IMAGE" --format '{{.Os}}/{{.Architecture}}')" == "linux/$ARCH" ]]
+          [[ "$(docker image inspect "$RUNTIME_IMAGE" --format '{{.Os}}/{{.Architecture}}')" == "linux/$ARCH" ]]
+      - name: Test final runtime dependencies and all send service tests
+        run: |
+          docker run --rm --network none --platform "linux/$ARCH" --entrypoint sh "$RUNTIME_IMAGE" -ec 'ldd /app/server; ffmpeg -version; pdftoppm -v' > build/native-release/runtime-dependencies.log 2>&1
+          docker buildx build --builder default --platform "linux/$ARCH" --load --progress plain -f nandocosta/Dockerfile.runtime-tests --build-arg "VERIFY_IMAGE=$VERIFY_IMAGE" --build-arg "RUNTIME_IMAGE=$RUNTIME_IMAGE" -t "$RUNTIME_TEST_IMAGE" . 2>&1 | tee build/native-release/runtime-test-build.log
+          docker run --rm --network none --platform "linux/$ARCH" "$RUNTIME_TEST_IMAGE" -test.list '^Test' > build/native-release/runtime-test-list.log
+          expected="$(grep -c '^Test' build/native-release/runtime-test-list.log)"
+          [[ "$expected" -ge 43 ]]
+          docker run --rm --network none --platform "linux/$ARCH" "$RUNTIME_TEST_IMAGE" -test.v 2>&1 | tee build/native-release/runtime-tests.log
+          ! grep -q -- '--- SKIP:' build/native-release/runtime-tests.log
+          [[ "$(grep -c '^--- PASS:' build/native-release/runtime-tests.log)" == "$expected" ]]
+          grep -q '^--- PASS: TestMakePDFThumbnail_RendersFirstPageWhenPopplerAvailable' build/native-release/runtime-tests.log
+          echo "$expected" > build/native-release/runtime-test-count.txt
+      - name: Export validated native runtime and evidence
+        run: |
+          docker image inspect "$RUNTIME_IMAGE" "$VERIFY_IMAGE" > build/native-release/image-inspect.json
+          docker save --output build/native-release/images.tar "$RUNTIME_IMAGE"
+          sha256sum Dockerfile nandocosta/Dockerfile.runtime-tests go.mod go.sum VERSION nandocosta/RELEASE.json > build/native-release/source-inputs.sha256
+          jq -n --arg version "$VERSION" --arg arch "$ARCH" --arg machine "$(uname -m)" --arg commit "$GITHUB_SHA" --arg run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --arg runtime_image "$RUNTIME_IMAGE" --arg verify_image "$VERIFY_IMAGE" --argjson tests "$(cat build/native-release/runtime-test-count.txt)" '{version:$version,arch:$arch,platform:("linux/"+$arch),native_machine:$machine,source_commit:$commit,run_url:$run_url,native_go_test_vet_race_passed:true,runtime_test_count:$tests,runtime_tests_no_skips:true,live_qr_verified:false,postgres_store_verified:false,crossarch_auth_migration_verified:false,archive_images:[$runtime_image],runtime_image:$runtime_image,verification_image_tested_locally:$verify_image}' > build/native-release/native-validation.json
+          (cd build/native-release && sha256sum images.tar image-inspect.json native-validation.json source-inputs.sha256 verification-build.json final-build.json *.log runtime-test-count.txt > SHA256SUMS)
+      - name: Upload native image archives without requiring registry credentials
+        uses: actions/upload-artifact@v4
         with:
-          images: evoapicloud/evolution-go
-          tags: |
-            type=raw,value=${{ steps.version.outputs.version }}
-            type=raw,value=latest,enable=${{ !contains(steps.version.outputs.version, '-beta') }}
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to Docker Hub
+          name: native-${{ env.VERSION }}-${{ matrix.arch }}
+          path: build/native-release/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+  publish:
+    if: ${{ inputs.publish }}
+    needs: [preflight, native]
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-${{ env.VERSION }}-*
+          path: build/native-artifacts
+      - name: Verify archives and load both validated native images
+        run: |
+          archives=(build/native-artifacts/native-*)
+          [[ "${#archives[@]}" == 2 ]]
+          for arch in amd64 arm64; do
+            artifact="build/native-artifacts/native-$VERSION-$arch"
+            (cd "$artifact" && sha256sum -c SHA256SUMS)
+            jq -e --arg version "$VERSION" --arg arch "$arch" --arg commit "$GITHUB_SHA" '.version == $version and .arch == $arch and .platform == ("linux/" + $arch) and .source_commit == $commit and .native_go_test_vet_race_passed == true and .runtime_tests_no_skips == true and .runtime_test_count >= 43' "$artifact/native-validation.json"
+            docker load --input "$artifact/images.tar"
+            [[ "$(docker image inspect "evolution-go:$VERSION-$arch" --format '{{.Os}}/{{.Architecture}}')" == "linux/$arch" ]]
+          done
+      - name: Recheck public repository and all immutable release targets
+        run: |
+          python3 -B nandocosta/check-public-repository.py
+          for tag in "$VERSION" "$VERSION-amd64" "$VERSION-arm64"; do
+            status="$(curl --silent --show-error --max-time 20 --output /dev/null --write-out '%{http_code}' "https://hub.docker.com/v2/repositories/$IMAGE_REPOSITORY/tags/$tag/")"
+            [[ "$status" == 404 ]] || { echo "Refusing existing or unverified tag $tag (HTTP $status)"; exit 1; }
+          done
+      - name: Login for optional publication after both native jobs
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
-
-      - name: Build and push
-        id: docker_build
-        uses: docker/build-push-action@v5
+      - name: Publish architecture suffixes only after both native jobs passed
+        run: |
+          mkdir -p build/native-digests
+          for arch in amd64 arm64; do
+            remote="$IMAGE_REPOSITORY:$VERSION-$arch"
+            docker tag "evolution-go:$VERSION-$arch" "$remote"
+            docker push "$remote"
+            digest="$(docker image inspect "$remote" --format '{{json .RepoDigests}}' | jq -er --arg prefix "$IMAGE_REPOSITORY@" '[.[] | select(startswith($prefix))] | select(length == 1) | .[0] | split("@")[1]')"
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            jq -n --arg arch "$arch" --arg digest "$digest" '{arch:$arch,digest:$digest}' > "build/native-digests/$arch.json"
+          done
+          echo "AMD64_DIGEST=$(jq -er .digest build/native-digests/amd64.json)" >> "$GITHUB_ENV"
+          echo "ARM64_DIGEST=$(jq -er .digest build/native-digests/arm64.json)" >> "$GITHUB_ENV"
+      - name: Validate index and recheck version immediately before publication
+        run: |
+          python3 -B nandocosta/check-public-repository.py
+          docker buildx imagetools create --dry-run "$IMAGE_REPOSITORY@$AMD64_DIGEST" "$IMAGE_REPOSITORY@$ARM64_DIGEST" > build/native-digests/candidate-index.json
+          jq -e '.manifests | length == 2 and ([.[] | .platform.os + "/" + .platform.architecture] | sort) == ["linux/amd64","linux/arm64"]' build/native-digests/candidate-index.json
+          status="$(curl --silent --show-error --max-time 20 --output /dev/null --write-out '%{http_code}' "https://hub.docker.com/v2/repositories/$IMAGE_REPOSITORY/tags/$VERSION/")"
+          [[ "$status" == 404 ]] || { echo "Refusing existing or unverified version $VERSION (HTTP $status)"; exit 1; }
+      - name: Publish version index from exactly two approved digests
+        run: |
+          # Deliberately no --append and no latest tag. Canonical version is new.
+          docker buildx imagetools create --tag "$IMAGE_REPOSITORY:$VERSION" "$IMAGE_REPOSITORY@$AMD64_DIGEST" "$IMAGE_REPOSITORY@$ARM64_DIGEST"
+          docker buildx imagetools inspect "$IMAGE_REPOSITORY:$VERSION" --raw > build/native-digests/published-index.json
+          jq -e --arg amd64 "$AMD64_DIGEST" --arg arm64 "$ARM64_DIGEST" '.manifests | length == 2 and ([.[] | .platform.os + "/" + .platform.architecture] | sort) == ["linux/amd64","linux/arm64"] and ([.[].digest] | sort) == ([$amd64,$arm64] | sort)' build/native-digests/published-index.json
+      - uses: actions/upload-artifact@v4
         with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          build-args: |
-            VERSION=${{ steps.version.outputs.version }}
-
-      - name: Image digest
-        run: echo ${{ steps.docker_build.outputs.digest }}
+          name: published-native-index-${{ env.VERSION }}
+          path: build/native-digests/
+          if-no-files-found: error

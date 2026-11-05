@@ -1,0 +1,137 @@
+=== RUN   TestArchiveEventReachesWebhookWithTypedFields
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-archive] Chat archived
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-archive] ===== DISPATCHING WEBHOOK ===== Event: Archive, Queue: synthetic-archive.archive, DataSize: 226 bytes
+--- PASS: TestArchiveEventReachesWebhookWithTypedFields (0.00s)
+=== RUN   TestQRPairSuccessWinsBeforeCodeLimitOrTimeout
+=== RUN   TestQRPairSuccessWinsBeforeCodeLimitOrTimeout/late-code
+2026/11/04 20:40:42 [44m[INFO][0m QR Pair Success for user 'qr-test-instance' with JID '10000000000@s.whatsapp.net' - '10000000000@s.whatsapp.net'
+2026/11/04 20:40:42 [44m[INFO][0m [qr-test-instance] Updating JID: 10000000000@s.whatsapp.net in Instance: 10000000000@s.whatsapp.net
+2026/11/04 20:40:42 [44m[INFO][0m [qr-test-instance] Instance successfully updated
+2026/11/04 20:40:42 [43m[WARN][0m [qr-test-instance] No user info cached on pairing?
+2026/11/04 20:40:42 [44m[INFO][0m [qr-test-instance] ===== DISPATCHING WEBHOOK ===== Event: PairSuccess, Queue: qr-test-instance.pairsuccess, DataSize: 263 bytes
+=== RUN   TestQRPairSuccessWinsBeforeCodeLimitOrTimeout/max-count
+2026/11/04 20:40:43 [44m[INFO][0m QR Pair Success for user 'qr-test-instance' with JID '10000000000@s.whatsapp.net' - '10000000000@s.whatsapp.net'
+2026/11/04 20:40:43 [44m[INFO][0m [qr-test-instance] Updating JID: 10000000000@s.whatsapp.net in Instance: 10000000000@s.whatsapp.net
+2026/11/04 20:40:43 [44m[INFO][0m [qr-test-instance] Instance successfully updated
+2026/11/04 20:40:43 [43m[WARN][0m [qr-test-instance] No user info cached on pairing?
+2026/11/04 20:40:43 [44m[INFO][0m [qr-test-instance] ===== DISPATCHING WEBHOOK ===== Event: PairSuccess, Queue: qr-test-instance.pairsuccess, DataSize: 263 bytes
+=== RUN   TestQRPairSuccessWinsBeforeCodeLimitOrTimeout/timeout
+2026/11/04 20:40:43 [44m[INFO][0m [qr-test-instance] QR code generated #1 (max: 0)
+2026/11/04 20:40:43 [44m[INFO][0m QR Pair Success for user 'qr-test-instance' with JID '10000000000@s.whatsapp.net' - '10000000000@s.whatsapp.net'
+2026/11/04 20:40:43 [44m[INFO][0m [qr-test-instance] Updating JID: 10000000000@s.whatsapp.net in Instance: 10000000000@s.whatsapp.net
+2026/11/04 20:40:43 [44m[INFO][0m [qr-test-instance] Instance successfully updated
+2026/11/04 20:40:43 [43m[WARN][0m [qr-test-instance] No user info cached on pairing?
+2026/11/04 20:40:43 [44m[INFO][0m [qr-test-instance] ===== DISPATCHING WEBHOOK ===== Event: PairSuccess, Queue: qr-test-instance.pairsuccess, DataSize: 263 bytes
+--- PASS: TestQRPairSuccessWinsBeforeCodeLimitOrTimeout (0.04s)
+    --- PASS: TestQRPairSuccessWinsBeforeCodeLimitOrTimeout/late-code (0.02s)
+    --- PASS: TestQRPairSuccessWinsBeforeCodeLimitOrTimeout/max-count (0.01s)
+    --- PASS: TestQRPairSuccessWinsBeforeCodeLimitOrTimeout/timeout (0.02s)
+=== RUN   TestQRPublicationFinishesBeforePairingClearsIt
+2026/11/04 20:40:43 [44m[INFO][0m [qr-test-instance] QR code generated #1 (max: 0)
+2026/11/04 20:40:43 [44m[INFO][0m QR Pair Success for user 'qr-test-instance' with JID '10000000000@s.whatsapp.net' - '10000000000@s.whatsapp.net'
+2026/11/04 20:40:43 [44m[INFO][0m [qr-test-instance] Updating JID: 10000000000@s.whatsapp.net in Instance: 10000000000@s.whatsapp.net
+2026/11/04 20:40:43 [44m[INFO][0m [qr-test-instance] Instance successfully updated
+2026/11/04 20:40:43 [43m[WARN][0m [qr-test-instance] No user info cached on pairing?
+2026/11/04 20:40:43 [44m[INFO][0m [qr-test-instance] ===== DISPATCHING WEBHOOK ===== Event: PairSuccess, Queue: qr-test-instance.pairsuccess, DataSize: 263 bytes
+--- PASS: TestQRPublicationFinishesBeforePairingClearsIt (0.01s)
+=== RUN   TestQRTerminalActionWinsBeforeLatePairing
+=== RUN   TestQRTerminalActionWinsBeforeLatePairing/timeout
+2026/11/04 20:40:43 [44m[INFO][0m [qr-test-instance] QR code generated #1 (max: 0)
+2026/11/04 20:40:43 [43m[WARN][0m [qr-test-instance] QR timeout — stopping unpaired connection
+=== RUN   TestQRTerminalActionWinsBeforeLatePairing/max-count
+2026/11/04 20:40:43 [43m[WARN][0m [qr-test-instance] QR timeout — stopping unpaired connection
+--- PASS: TestQRTerminalActionWinsBeforeLatePairing (0.03s)
+    --- PASS: TestQRTerminalActionWinsBeforeLatePairing/timeout (0.02s)
+    --- PASS: TestQRTerminalActionWinsBeforeLatePairing/max-count (0.02s)
+=== RUN   TestQRPairingMarksCompletionBeforeItsPersistence
+2026/11/04 20:40:43 [44m[INFO][0m QR Pair Success for user 'qr-test-instance' with JID '10000000000@s.whatsapp.net' - '10000000000@s.whatsapp.net'
+2026/11/04 20:40:43 [44m[INFO][0m [qr-test-instance] Updating JID: 10000000000@s.whatsapp.net in Instance: 10000000000@s.whatsapp.net
+2026/11/04 20:40:43 [44m[INFO][0m [qr-test-instance] Instance successfully updated
+2026/11/04 20:40:43 [43m[WARN][0m [qr-test-instance] No user info cached on pairing?
+2026/11/04 20:40:43 [44m[INFO][0m [qr-test-instance] ===== DISPATCHING WEBHOOK ===== Event: PairSuccess, Queue: qr-test-instance.pairsuccess, DataSize: 263 bytes
+--- PASS: TestQRPairingMarksCompletionBeforeItsPersistence (0.01s)
+=== RUN   TestQRDuplicateBatchesHaveOnlyOneWorker
+2026/11/04 20:40:43 [44m[INFO][0m [qr-test-instance] QR code generated #1 (max: 0)
+2026/11/04 20:40:43 [44m[INFO][0m QR Pair Success for user 'qr-test-instance' with JID '10000000000@s.whatsapp.net' - '10000000000@s.whatsapp.net'
+2026/11/04 20:40:43 [44m[INFO][0m [qr-test-instance] Updating JID: 10000000000@s.whatsapp.net in Instance: 10000000000@s.whatsapp.net
+2026/11/04 20:40:43 [44m[INFO][0m [qr-test-instance] Instance successfully updated
+2026/11/04 20:40:43 [43m[WARN][0m [qr-test-instance] No user info cached on pairing?
+2026/11/04 20:40:43 [44m[INFO][0m [qr-test-instance] ===== DISPATCHING WEBHOOK ===== Event: PairSuccess, Queue: qr-test-instance.pairsuccess, DataSize: 263 bytes
+--- PASS: TestQRDuplicateBatchesHaveOnlyOneWorker (0.02s)
+=== RUN   TestQRPasskeyPauseAllowsLaterBatch
+2026/11/04 20:40:43 [44m[INFO][0m QR Pair Success for user 'qr-test-instance' with JID '10000000000@s.whatsapp.net' - '10000000000@s.whatsapp.net'
+2026/11/04 20:40:43 [44m[INFO][0m [qr-test-instance] Updating JID: 10000000000@s.whatsapp.net in Instance: 10000000000@s.whatsapp.net
+2026/11/04 20:40:43 [44m[INFO][0m [qr-test-instance] Instance successfully updated
+2026/11/04 20:40:43 [43m[WARN][0m [qr-test-instance] No user info cached on pairing?
+2026/11/04 20:40:43 [44m[INFO][0m [qr-test-instance] ===== DISPATCHING WEBHOOK ===== Event: PairSuccess, Queue: qr-test-instance.pairsuccess, DataSize: 263 bytes
+--- PASS: TestQRPasskeyPauseAllowsLaterBatch (0.03s)
+=== RUN   TestQRStaleGenerationCannotPublishStopOrPair
+--- PASS: TestQRStaleGenerationCannotPublishStopOrPair (0.01s)
+PASS
+ok  	github.com/evolution-foundation/evolution-go/pkg/whatsmeow/service	1.211s
+=== RUN   TestQRPollingDoesNotRestartAuthenticatedSession
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Client is already logged in; skipping QR startup
+--- PASS: TestQRPollingDoesNotRestartAuthenticatedSession (0.00s)
+=== RUN   TestQRPollingReusesPairingSocketAndStartsMissingSession
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Starting client for QR code
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Starting client for QR code
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Starting client for QR code
+2026/11/04 20:40:42 [41m[ERR][0m [synthetic-session] Failed to start instance: startup failed
+--- PASS: TestQRPollingReusesPairingSocketAndStartsMissingSession (0.00s)
+=== RUN   TestGetQrStartsMissingTypedClientWithoutPanic
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Starting client for QR code
+2026/11/04 20:40:42 [41m[ERR][0m [synthetic-session] Failed to start instance: synthetic startup failure
+--- PASS: TestGetQrStartsMissingTypedClientWithoutPanic (0.00s)
+=== RUN   TestDisconnectPreservesStoredSubscriptionsAndSettings
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Disconnection successful
+--- PASS: TestDisconnectPreservesStoredSubscriptionsAndSettings (0.00s)
+=== RUN   TestDisconnectPropagatesPersistenceFailure
+2026/11/04 20:40:42 [44m[INFO][0m [synthetic-session] Disconnection successful
+--- PASS: TestDisconnectPropagatesPersistenceFailure (0.00s)
+PASS
+ok  	github.com/evolution-foundation/evolution-go/pkg/instance/service	1.047s
+=== RUN   TestRequestHistorySyncSendsToOwnPrimaryDevice
+--- PASS: TestRequestHistorySyncSendsToOwnPrimaryDevice (0.00s)
+=== RUN   TestRequestHistorySyncPropagatesSendError
+--- PASS: TestRequestHistorySyncPropagatesSendError (0.00s)
+PASS
+ok  	github.com/evolution-foundation/evolution-go/pkg/chat/service	1.034s

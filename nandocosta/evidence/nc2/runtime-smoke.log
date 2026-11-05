@@ -1,0 +1,36 @@
+Usage of /app/server:
+  -dev
+    	Enable development mode
+	/lib/ld-musl-x86_64.so.1 (0x77ac43d93000)
+	libc.musl-x86_64.so.1 => /lib/ld-musl-x86_64.so.1 (0x77ac43d93000)
+ffmpeg version 8.0.1 Copyright (c) 2000-2025 the FFmpeg developers
+pdftoppm version 25.12.0
+Copyright 2005-2025 The Poppler Developers - http://poppler.freedesktop.org
+Copyright 1996-2011, 2022 Glyph & Cog, LLC
+{
+  "version": "0.7.2-nc.2",
+  "image": "nandocosta/evolution-go:0.7.2-nc.2",
+  "visibility": "public",
+  "upstream": "https://github.com/evolution-foundation/evolution-go",
+  "base_commit": "9337afc47e10b86cc896a6f432240e40fee95dd1",
+  "handshake_sources": [227, 229, 230],
+  "applied_prs": {
+    "220": "7674f11d0083774f37b502c96789b1359bac9d40",
+    "221": "bb9115ec65bd0836fd2be3d499b0e8303185e0e3",
+    "224": "6bef71833226b661f2844b9bd018ba05093b49e1",
+    "234": "a519ec5e9cdfcfc615fbdf2a3c65992521416a8c",
+    "149": "4fae329a32f5fdc36614b394c9426abcaa988c3f",
+    "187": "b572068140107399eadf98853eb4a29ae13c37ec",
+    "195": "16c4be6e9a0ae8a0bbc41f8b2790a362a7a4e2e2",
+    "212": "ae69dac8108f378fa269cb30e15f482e83198134",
+    "218": "86b4145b336ec8f426846a2e46b2870623282e2f"
+  },
+  "whatsmeow_commit": "a2381054887e16d22428430fdc4d2b027a7f29a7",
+  "local_fixes": [
+    "Synchronized QR rotation with pairing completion and connection generation cleanup",
+    "QR expiration stops the unpaired socket without revoking WhatsApp credentials",
+    "Raw QR credentials and full pairing instance records are omitted from console logs"
+  ],
+  "paired_account_validation": "pending",
+  "production_deployed": false
+}

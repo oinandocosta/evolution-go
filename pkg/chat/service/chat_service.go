@@ -7,10 +7,12 @@ import (
 
 	instance_model "github.com/evolution-foundation/evolution-go/pkg/instance/model"
 	logger_wrapper "github.com/evolution-foundation/evolution-go/pkg/logger"
+	"github.com/evolution-foundation/evolution-go/pkg/runtimestate"
 	"github.com/evolution-foundation/evolution-go/pkg/utils"
 	whatsmeow_service "github.com/evolution-foundation/evolution-go/pkg/whatsmeow/service"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/appstate"
+	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 )
 
@@ -25,7 +27,7 @@ type ChatService interface {
 }
 
 type chatService struct {
-	clientPointer    map[string]*whatsmeow.Client
+	clientPointer    *runtimestate.Map[string, *whatsmeow.Client]
 	whatsmeowService whatsmeow_service.WhatsmeowService
 	loggerWrapper    *logger_wrapper.LoggerManager
 }
@@ -40,7 +42,7 @@ type HistorySyncRequestStruct struct {
 }
 
 func (c *chatService) ensureClientConnected(instanceId string) (*whatsmeow.Client, error) {
-	client := c.clientPointer[instanceId]
+	client := c.clientPointer.Get(instanceId)
 	c.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Checking client connection status - Client exists: %v", instanceId, client != nil)
 
 	if client == nil {
@@ -54,7 +56,7 @@ func (c *chatService) ensureClientConnected(instanceId string) (*whatsmeow.Clien
 		c.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Instance started, waiting 2 seconds...", instanceId)
 		time.Sleep(2 * time.Second)
 
-		client = c.clientPointer[instanceId]
+		client = c.clientPointer.Get(instanceId)
 		c.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Checking new client - Exists: %v, Connected: %v",
 			instanceId,
 			client != nil,
@@ -232,9 +234,7 @@ func (c *chatService) HistorySyncRequest(data *HistorySyncRequestStruct, instanc
 		Timestamp: data.MessageInfo.Timestamp,
 	}
 
-	histRequest := client.BuildHistorySyncRequest(&messageInfo, data.Count)
-
-	res, err := client.SendMessage(context.Background(), messageInfo.Chat, histRequest, whatsmeow.SendRequestExtra{Peer: true})
+	res, err := requestHistorySync(context.Background(), client, &messageInfo, data.Count)
 	if err != nil {
 		c.loggerWrapper.GetLogger(instance.Id).LogError("[%s] error history sync request: %v", instance.Id, err)
 		return nil, err
@@ -243,8 +243,17 @@ func (c *chatService) HistorySyncRequest(data *HistorySyncRequestStruct, instanc
 	return &res, nil
 }
 
+type historySyncSender interface {
+	BuildHistorySyncRequest(lastKnownMessageInfo *types.MessageInfo, count int) *waE2E.Message
+	SendPeerMessage(ctx context.Context, message *waE2E.Message) (whatsmeow.SendResponse, error)
+}
+
+func requestHistorySync(ctx context.Context, sender historySyncSender, messageInfo *types.MessageInfo, count int) (whatsmeow.SendResponse, error) {
+	return sender.SendPeerMessage(ctx, sender.BuildHistorySyncRequest(messageInfo, count))
+}
+
 func NewChatService(
-	clientPointer map[string]*whatsmeow.Client,
+	clientPointer *runtimestate.Map[string, *whatsmeow.Client],
 	whatsmeowService whatsmeow_service.WhatsmeowService,
 	loggerWrapper *logger_wrapper.LoggerManager,
 ) ChatService {

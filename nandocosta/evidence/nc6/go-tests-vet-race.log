@@ -1,0 +1,119 @@
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 2.21kB 0.0s done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/golang:1.26.10-alpine@sha256:a2012b4a1d1f9f7e9f44e0d39b805a901e856b1dd80b4e6ee4338db547050308
+#2 ...
+
+#3 [auth] library/golang:pull token for registry-1.docker.io
+#3 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/golang:1.26.10-alpine@sha256:a2012b4a1d1f9f7e9f44e0d39b805a901e856b1dd80b4e6ee4338db547050308
+#2 DONE 0.9s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 1.16kB done
+#4 DONE 0.0s
+
+#5 [dependencies 1/5] FROM docker.io/library/golang:1.26.10-alpine@sha256:a2012b4a1d1f9f7e9f44e0d39b805a901e856b1dd80b4e6ee4338db547050308
+#5 DONE 0.0s
+
+#6 [internal] load build context
+#6 transferring context: 1.34MB 0.1s done
+#6 DONE 0.1s
+
+#7 [dependencies 3/5] WORKDIR /build
+#7 CACHED
+
+#8 [dependencies 4/5] COPY go.mod go.sum ./
+#8 CACHED
+
+#9 [dependencies 2/5] RUN apk add --no-cache git build-base libjpeg-turbo-dev libwebp-dev
+#9 CACHED
+
+#10 [dependencies 5/5] RUN go mod download
+#10 CACHED
+
+#11 [verification 1/3] COPY . .
+#11 DONE 0.3s
+
+#12 [verification 2/3] RUN go test ./... -count=1 && go vet ./...
+#12 34.10 ?   	github.com/evolution-foundation/evolution-go/cmd/evolution-go	[no test files]
+#12 34.10 ?   	github.com/evolution-foundation/evolution-go/docs	[no test files]
+#12 34.10 ?   	github.com/evolution-foundation/evolution-go/nandocosta	[no test files]
+#12 34.10 ?   	github.com/evolution-foundation/evolution-go/nandocosta/auth-migration-probe	[no test files]
+#12 34.10 ?   	github.com/evolution-foundation/evolution-go/pkg/call/handler	[no test files]
+#12 34.10 ?   	github.com/evolution-foundation/evolution-go/pkg/call/service	[no test files]
+#12 34.10 ?   	github.com/evolution-foundation/evolution-go/pkg/chat/handler	[no test files]
+#12 34.12 ok  	github.com/evolution-foundation/evolution-go/pkg/chat/service	0.014s
+#12 34.12 ?   	github.com/evolution-foundation/evolution-go/pkg/community/handler	[no test files]
+#12 34.12 ?   	github.com/evolution-foundation/evolution-go/pkg/community/service	[no test files]
+#12 34.12 ?   	github.com/evolution-foundation/evolution-go/pkg/config	[no test files]
+#12 34.12 ?   	github.com/evolution-foundation/evolution-go/pkg/config/env	[no test files]
+#12 34.12 ?   	github.com/evolution-foundation/evolution-go/pkg/core	[no test files]
+#12 34.12 ?   	github.com/evolution-foundation/evolution-go/pkg/events/interfaces	[no test files]
+#12 34.12 ?   	github.com/evolution-foundation/evolution-go/pkg/events/nats	[no test files]
+#12 34.12 ?   	github.com/evolution-foundation/evolution-go/pkg/events/rabbitmq	[no test files]
+#12 34.13 ok  	github.com/evolution-foundation/evolution-go/pkg/events/webhook	0.025s
+#12 34.22 ok  	github.com/evolution-foundation/evolution-go/pkg/events/websocket	0.120s
+#12 34.22 ?   	github.com/evolution-foundation/evolution-go/pkg/group/handler	[no test files]
+#12 34.22 ?   	github.com/evolution-foundation/evolution-go/pkg/group/service	[no test files]
+#12 34.22 ok  	github.com/evolution-foundation/evolution-go/pkg/instance/handler	0.018s
+#12 34.22 ?   	github.com/evolution-foundation/evolution-go/pkg/instance/model	[no test files]
+#12 34.22 ok  	github.com/evolution-foundation/evolution-go/pkg/instance/repository	0.052s
+#12 34.22 ok  	github.com/evolution-foundation/evolution-go/pkg/instance/service	0.030s
+#12 34.23 ?   	github.com/evolution-foundation/evolution-go/pkg/internal/event_types	[no test files]
+#12 34.23 ?   	github.com/evolution-foundation/evolution-go/pkg/label/handler	[no test files]
+#12 34.23 ?   	github.com/evolution-foundation/evolution-go/pkg/label/model	[no test files]
+#12 34.23 ?   	github.com/evolution-foundation/evolution-go/pkg/label/repository	[no test files]
+#12 34.23 ?   	github.com/evolution-foundation/evolution-go/pkg/label/service	[no test files]
+#12 34.23 ?   	github.com/evolution-foundation/evolution-go/pkg/logger	[no test files]
+#12 34.23 ?   	github.com/evolution-foundation/evolution-go/pkg/message/handler	[no test files]
+#12 34.23 ?   	github.com/evolution-foundation/evolution-go/pkg/message/model	[no test files]
+#12 34.23 ok  	github.com/evolution-foundation/evolution-go/pkg/message/repository	0.010s
+#12 34.23 ?   	github.com/evolution-foundation/evolution-go/pkg/message/service	[no test files]
+#12 34.23 ?   	github.com/evolution-foundation/evolution-go/pkg/middleware	[no test files]
+#12 34.23 ?   	github.com/evolution-foundation/evolution-go/pkg/newsletter/handler	[no test files]
+#12 34.23 ?   	github.com/evolution-foundation/evolution-go/pkg/newsletter/service	[no test files]
+#12 34.23 ?   	github.com/evolution-foundation/evolution-go/pkg/passkey/ceremony	[no test files]
+#12 34.23 ?   	github.com/evolution-foundation/evolution-go/pkg/passkey/handler	[no test files]
+#12 34.23 ?   	github.com/evolution-foundation/evolution-go/pkg/poll/handler	[no test files]
+#12 34.23 ?   	github.com/evolution-foundation/evolution-go/pkg/poll/model	[no test files]
+#12 34.23 ?   	github.com/evolution-foundation/evolution-go/pkg/poll/service	[no test files]
+#12 34.23 ?   	github.com/evolution-foundation/evolution-go/pkg/routes	[no test files]
+#12 34.23 ok  	github.com/evolution-foundation/evolution-go/pkg/runtimestate	0.100s
+#12 34.23 ?   	github.com/evolution-foundation/evolution-go/pkg/sendMessage/handler	[no test files]
+#12 34.50 ok  	github.com/evolution-foundation/evolution-go/pkg/sendMessage/service	0.390s
+#12 34.50 ?   	github.com/evolution-foundation/evolution-go/pkg/server/handler	[no test files]
+#12 34.50 ?   	github.com/evolution-foundation/evolution-go/pkg/storage/interfaces	[no test files]
+#12 34.50 ?   	github.com/evolution-foundation/evolution-go/pkg/storage/minio	[no test files]
+#12 34.50 ?   	github.com/evolution-foundation/evolution-go/pkg/telemetry	[no test files]
+#12 34.50 ok  	github.com/evolution-foundation/evolution-go/pkg/user/handler	0.021s
+#12 34.50 ok  	github.com/evolution-foundation/evolution-go/pkg/user/service	0.066s
+#12 34.50 ok  	github.com/evolution-foundation/evolution-go/pkg/utils	0.009s
+#12 34.50 ok  	github.com/evolution-foundation/evolution-go/pkg/whatsmeow/service	0.239s
+#12 DONE 41.6s
+
+#13 [verification 3/3] RUN go test -race ./pkg/runtimestate ./pkg/events/websocket ./pkg/events/webhook ./pkg/instance/handler ./pkg/instance/repository ./pkg/whatsmeow/service ./pkg/instance/service ./pkg/chat/service ./pkg/sendMessage/service ./pkg/utils ./pkg/user/service ./pkg/user/handler -count=1
+#13 13.13 ok  	github.com/evolution-foundation/evolution-go/pkg/runtimestate	2.692s
+#13 22.25 ok  	github.com/evolution-foundation/evolution-go/pkg/events/websocket	1.221s
+#13 22.25 ok  	github.com/evolution-foundation/evolution-go/pkg/events/webhook	1.044s
+#13 27.06 ok  	github.com/evolution-foundation/evolution-go/pkg/instance/handler	1.048s
+#13 27.10 ok  	github.com/evolution-foundation/evolution-go/pkg/instance/repository	1.087s
+#13 34.96 ok  	github.com/evolution-foundation/evolution-go/pkg/whatsmeow/service	1.500s
+#13 34.96 ok  	github.com/evolution-foundation/evolution-go/pkg/instance/service	1.059s
+#13 34.96 ok  	github.com/evolution-foundation/evolution-go/pkg/chat/service	1.042s
+#13 39.36 ok  	github.com/evolution-foundation/evolution-go/pkg/sendMessage/service	5.903s
+#13 39.36 ok  	github.com/evolution-foundation/evolution-go/pkg/utils	1.027s
+#13 39.36 ok  	github.com/evolution-foundation/evolution-go/pkg/user/service	1.098s
+#13 39.36 ok  	github.com/evolution-foundation/evolution-go/pkg/user/handler	1.057s
+#13 DONE 40.0s
+
+#14 exporting to image
+#14 exporting layers
+#14 exporting layers 1.4s done
+#14 writing image sha256:4b5c726edd368cf00c258183714a21ccb15b41c35eac2e82feb4dbbf7268b928 done
+#14 naming to docker.io/nandocosta/evolution-go:0.7.2-nc.6-verify 0.0s done
+#14 DONE 1.5s

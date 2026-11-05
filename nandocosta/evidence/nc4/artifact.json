@@ -1,0 +1,40 @@
+{
+  "image": "nandocosta/evolution-go:0.7.2-nc.4",
+  "image_id": "sha256:d2636c33729da64ef4b2ab5b2a80884f4e421369bad7463fcb69e3d718689584",
+  "platform": "linux/amd64",
+  "registry_digest": "sha256:119152284b813d6273c5fc83db880e321471f1dd8ae22dec0a0e8bf9bb00fc40",
+  "public": true,
+  "published": true,
+  "anonymous_pull_verified": true,
+  "published_at": "2026-11-04T21:40:19.998143Z",
+  "archive": "build/nandocosta-evolution-go-0.7.2-nc.4.tar",
+  "archive_bytes": 222345728,
+  "archive_sha256": "5f1d0a85819a76a68179eaa869bf167be88822fc16d5e0f79befbdc1d90830e2",
+  "source_sha256": "983a96b97f6774824d43e469bcee0bcac3a34b7c67e2c040fc618363df7b4103",
+  "source_file_count": 116,
+  "tests": {
+    "go_tests_vet_race_passed": true,
+    "race_packages": 12,
+    "session_compatibility": {
+      "schema": 14,
+      "fingerprint_unchanged": true,
+      "from": "0.7.2-nc.3",
+      "to": "0.7.2-nc.4"
+    },
+    "live_qr_count": 6,
+    "live_qr_seconds": 1.12,
+    "postgres_concurrent_starts": 64,
+    "final_runtime_send_tests": 43,
+    "avatar_consumer_tests": 31,
+    "avatar_consumer_assertions": 176,
+    "edited_message_ui_desktop_mobile_verified": true,
+    "api_commit": "8565536f8f14ee6de5f4d09415206b943e879333"
+  },
+  "paired_account_validation": "pending",
+  "production_deployed": false,
+  "api_commit": "8565536f8f14ee6de5f4d09415206b943e879333",
+  "api_pushed_to": "origin/master",
+  "personal_whatsapp_not_used": true,
+  "disposable_test_containers_removed": true,
+  "temporary_cli_config_removed": true
+}

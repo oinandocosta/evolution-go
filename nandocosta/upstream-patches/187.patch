@@ -1,0 +1,37 @@
+From b572068140107399eadf98853eb4a29ae13c37ec Mon Sep 17 00:00:00 2001
+From: Guilherme Augusto Santos <guilherme@MacBook-Pro-de-Guilherme.local>
+Date: Thu, 3 Sep 2026 22:41:30 -0300
+Subject: [PATCH] fix(instance): do not clear event subscriptions on disconnect
+
+Disconnect was wiping Events before persisting. After reconnect the
+instance looked connected but CallWebhook built an empty subscription
+list (strings.Split("", ",") yields [""]), so every webhook was dropped.
+Keep subscriptions and only mark the instance disconnected.
+
+Co-authored-by: Cursor <cursoragent@cursor.com>
+---
+ pkg/instance/service/instance_service.go | 11 +++++++----
+ 1 file changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/pkg/instance/service/instance_service.go b/pkg/instance/service/instance_service.go
+index 3a54748db..fd4121c50 100644
+--- a/pkg/instance/service/instance_service.go
++++ b/pkg/instance/service/instance_service.go
+@@ -311,10 +311,13 @@ func (i instances) Disconnect(instance *instance_model.Instance) (*instance_mode
+ 			i.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Disconnection successful", instance.Id)
+ 			i.killChannel[instance.Id] <- true
+ 
+-			instance.Events = ""
+-
+-			err := i.instanceRepository.Update(instance)
+-			if err != nil {
++			// Do not clear instance.Events on disconnect. Wiping subscriptions
++			// leaves the instance "connected" after reconnect with an empty
++			// events string, and CallWebhook then drops every webhook (Go's
++			// strings.Split("", ",") yields [""], which fails IsEventType).
++			instance.Connected = false
++			instance.DisconnectReason = "Disconnected by API"
++			if err := i.instanceRepository.UpdateConnected(instance.Id, false, instance.DisconnectReason); err != nil {
+ 				return instance, err
+ 			}
+ 

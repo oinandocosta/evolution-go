@@ -1,0 +1,12 @@
+test_http_errors_and_connection_failures_block_publication (test_public_repository.PublicRepositoryTests.test_http_errors_and_connection_failures_block_publication) ... ok
+test_invalid_json_or_non_object_metadata_blocks_publication (test_public_repository.PublicRepositoryTests.test_invalid_json_or_non_object_metadata_blocks_publication) ... ok
+test_main_reports_failure_without_dumping_response_details (test_public_repository.PublicRepositoryTests.test_main_reports_failure_without_dumping_response_details) ... ok
+test_non_200_response_is_blocked (test_public_repository.PublicRepositoryTests.test_non_200_response_is_blocked) ... ok
+test_private_missing_or_non_boolean_privacy_is_blocked (test_public_repository.PublicRepositoryTests.test_private_missing_or_non_boolean_privacy_is_blocked) ... ok
+test_public_repository_passes_using_only_one_anonymous_get (test_public_repository.PublicRepositoryTests.test_public_repository_passes_using_only_one_anonymous_get) ... ok
+test_redirect_handler_never_forwards_request (test_public_repository.PublicRepositoryTests.test_redirect_handler_never_forwards_request) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 0.002s
+
+OK

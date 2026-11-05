@@ -1,0 +1,354 @@
+=== RUN   TestClientSessionReadyRequiresConnectedAndLoggedIn
+=== RUN   TestClientSessionReadyRequiresConnectedAndLoggedIn/nil
+=== RUN   TestClientSessionReadyRequiresConnectedAndLoggedIn/typed_nil
+=== RUN   TestClientSessionReadyRequiresConnectedAndLoggedIn/socket_without_authentication
+=== RUN   TestClientSessionReadyRequiresConnectedAndLoggedIn/authentication_without_socket
+=== RUN   TestClientSessionReadyRequiresConnectedAndLoggedIn/authenticated_socket
+--- PASS: TestClientSessionReadyRequiresConnectedAndLoggedIn (0.00s)
+    --- PASS: TestClientSessionReadyRequiresConnectedAndLoggedIn/nil (0.00s)
+    --- PASS: TestClientSessionReadyRequiresConnectedAndLoggedIn/typed_nil (0.00s)
+    --- PASS: TestClientSessionReadyRequiresConnectedAndLoggedIn/socket_without_authentication (0.00s)
+    --- PASS: TestClientSessionReadyRequiresConnectedAndLoggedIn/authentication_without_socket (0.00s)
+    --- PASS: TestClientSessionReadyRequiresConnectedAndLoggedIn/authenticated_socket (0.00s)
+=== RUN   TestSendDelayRejectsClientReplacement
+--- PASS: TestSendDelayRejectsClientReplacement (0.10s)
+=== RUN   TestSendDelayChecksSessionAgainAfterTimer
+--- PASS: TestSendDelayChecksSessionAgainAfterTimer (0.00s)
+=== RUN   TestImageDimensions_PNGLandscape
+--- PASS: TestImageDimensions_PNGLandscape (0.01s)
+=== RUN   TestImageDimensions_JPEGPortrait
+--- PASS: TestImageDimensions_JPEGPortrait (0.02s)
+=== RUN   TestImageDimensions_InvalidDataReturnsNil
+--- PASS: TestImageDimensions_InvalidDataReturnsNil (0.00s)
+=== RUN   TestJPEGOrientation
+--- PASS: TestJPEGOrientation (0.00s)
+=== RUN   TestImageDimensions_EXIFRotatedJPEG
+--- PASS: TestImageDimensions_EXIFRotatedJPEG (0.00s)
+=== RUN   TestMakeJPEGThumbnail_FollowsEXIFOrientation
+--- PASS: TestMakeJPEGThumbnail_FollowsEXIFOrientation (0.01s)
+=== RUN   TestOrientRGBA_Rotate90Clockwise
+--- PASS: TestOrientRGBA_Rotate90Clockwise (0.00s)
+=== RUN   TestBuildLinkMessageMetadataFailureKeepsTextWithoutLeakingURL
+2026/11/04 18:15:20 [WARN] [synthetic-instance] SendLink: could not read the preview metadata: link preview: resource returned HTTP 403
+--- PASS: TestBuildLinkMessageMetadataFailureKeepsTextWithoutLeakingURL (0.01s)
+=== RUN   TestBuildLinkMessageNewsletterUsesInlineThumbnailWithoutAuthenticatedClient
+--- PASS: TestBuildLinkMessageNewsletterUsesInlineThumbnailWithoutAuthenticatedClient (0.01s)
+=== RUN   TestFetchLinkPreviewResourceTransportErrorOmitsCredentialsAndQuery
+--- PASS: TestFetchLinkPreviewResourceTransportErrorOmitsCredentialsAndQuery (0.00s)
+=== RUN   TestSetLinkThumbnailUploadFailureKeepsInlineImage
+--- PASS: TestSetLinkThumbnailUploadFailureKeepsInlineImage (0.01s)
+=== RUN   TestFetchLinkMetadataResolvesImageAgainstRedirectDestination
+--- PASS: TestFetchLinkMetadataResolvesImageAgainstRedirectDestination (0.00s)
+=== RUN   TestLinkPreviewTarget_PrefersExplicitURL
+--- PASS: TestLinkPreviewTarget_PrefersExplicitURL (0.00s)
+=== RUN   TestLinkPreviewTarget_FallsBackToFirstURLInText
+--- PASS: TestLinkPreviewTarget_FallsBackToFirstURLInText (0.00s)
+=== RUN   TestResolveLinkPreview_CallerValuesSkipTheFetch
+--- PASS: TestResolveLinkPreview_CallerValuesSkipTheFetch (0.00s)
+=== RUN   TestResolveLinkPreview_FillsOnlyMissingFields
+--- PASS: TestResolveLinkPreview_FillsOnlyMissingFields (0.00s)
+=== RUN   TestResolveLinkPreview_FetchErrorKeepsCallerValues
+--- PASS: TestResolveLinkPreview_FetchErrorKeepsCallerValues (0.00s)
+=== RUN   TestFetchLinkMetadata_SendsPreviewUserAgentAndReadsOpenGraph
+--- PASS: TestFetchLinkMetadata_SendsPreviewUserAgentAndReadsOpenGraph (0.00s)
+=== RUN   TestFetchLinkMetadata_RejectsNonSuccessStatus
+--- PASS: TestFetchLinkMetadata_RejectsNonSuccessStatus (0.00s)
+=== RUN   TestFetchLinkMetadata_ResolvesRelativeImageURL
+--- PASS: TestFetchLinkMetadata_ResolvesRelativeImageURL (0.00s)
+=== RUN   TestFetchLinkPreviewResource_RejectsOversizedBody
+--- PASS: TestFetchLinkPreviewResource_RejectsOversizedBody (0.00s)
+=== RUN   TestFetchLinkPreviewResource_RejectsNonSuccessStatus
+--- PASS: TestFetchLinkPreviewResource_RejectsNonSuccessStatus (0.00s)
+=== RUN   TestPrepareLinkPreviewImage_KeepsSizeAndEncodesJPEG
+--- PASS: TestPrepareLinkPreviewImage_KeepsSizeAndEncodesJPEG (0.01s)
+=== RUN   TestPrepareLinkPreviewImage_AcceptsWebP
+--- PASS: TestPrepareLinkPreviewImage_AcceptsWebP (0.02s)
+=== RUN   TestPrepareLinkPreviewImage_DownscalesLargeImages
+--- PASS: TestPrepareLinkPreviewImage_DownscalesLargeImages (0.13s)
+=== RUN   TestCheckLinkPreviewDimensions_RejectsDecompressionBomb
+--- PASS: TestCheckLinkPreviewDimensions_RejectsDecompressionBomb (0.00s)
+=== RUN   TestCheckLinkPreviewDimensions_AcceptsRegularPhoto
+--- PASS: TestCheckLinkPreviewDimensions_AcceptsRegularPhoto (0.01s)
+=== RUN   TestPrepareLinkPreviewImage_RejectsDecompressionBomb
+--- PASS: TestPrepareLinkPreviewImage_RejectsDecompressionBomb (0.00s)
+=== RUN   TestPrepareLinkPreviewImage_RejectsNonImage
+--- PASS: TestPrepareLinkPreviewImage_RejectsNonImage (0.00s)
+=== RUN   TestApplyLinkThumbnailUpload_SetsHighQualityFields
+--- PASS: TestApplyLinkThumbnailUpload_SetsHighQualityFields (0.00s)
+=== RUN   TestParticipantMentionJID
+=== PAUSE TestParticipantMentionJID
+=== RUN   TestSetMessageMentionedJIDs
+=== PAUSE TestSetMessageMentionedJIDs
+=== RUN   TestSetMessageMentionedJIDsRejectsMissingPayload
+=== PAUSE TestSetMessageMentionedJIDsRejectsMissingPayload
+=== RUN   TestSetMessageMentionedJIDsEmptyMentionsPreserveMessage
+=== PAUSE TestSetMessageMentionedJIDsEmptyMentionsPreserveMessage
+=== RUN   TestMakeJPEGThumbnail_ResizesLandscape
+--- PASS: TestMakeJPEGThumbnail_ResizesLandscape (0.01s)
+=== RUN   TestMakeJPEGThumbnail_DoesNotUpscaleSmallImages
+--- PASS: TestMakeJPEGThumbnail_DoesNotUpscaleSmallImages (0.00s)
+=== RUN   TestMakeJPEGThumbnail_InvalidInputReturnsNil
+--- PASS: TestMakeJPEGThumbnail_InvalidInputReturnsNil (0.00s)
+=== RUN   TestMakeJPEGThumbnail_DefaultsInvalidMaxWidth
+--- PASS: TestMakeJPEGThumbnail_DefaultsInvalidMaxWidth (0.01s)
+=== RUN   TestMakePDFThumbnail_InvalidInputReturnsNil
+--- PASS: TestMakePDFThumbnail_InvalidInputReturnsNil (0.05s)
+=== RUN   TestMakePDFThumbnail_RendersFirstPageWhenPopplerAvailable
+--- PASS: TestMakePDFThumbnail_RendersFirstPageWhenPopplerAvailable (0.02s)
+=== CONT  TestParticipantMentionJID
+=== RUN   TestParticipantMentionJID/prefers_phone_number_over_lid
+=== PAUSE TestParticipantMentionJID/prefers_phone_number_over_lid
+=== CONT  TestSetMessageMentionedJIDsRejectsMissingPayload
+=== CONT  TestSetMessageMentionedJIDsEmptyMentionsPreserveMessage
+=== RUN   TestSetMessageMentionedJIDsRejectsMissingPayload/nil_message
+=== PAUSE TestSetMessageMentionedJIDsRejectsMissingPayload/nil_message
+=== RUN   TestSetMessageMentionedJIDsRejectsMissingPayload/empty_message
+=== PAUSE TestSetMessageMentionedJIDsRejectsMissingPayload/empty_message
+=== RUN   TestSetMessageMentionedJIDsRejectsMissingPayload/unsupported_payload
+=== PAUSE TestSetMessageMentionedJIDsRejectsMissingPayload/unsupported_payload
+=== RUN   TestSetMessageMentionedJIDsRejectsMissingPayload/nil_wrapped_message
+=== PAUSE TestSetMessageMentionedJIDsRejectsMissingPayload/nil_wrapped_message
+=== RUN   TestSetMessageMentionedJIDsRejectsMissingPayload/empty_wrapped_message
+=== PAUSE TestSetMessageMentionedJIDsRejectsMissingPayload/empty_wrapped_message
+=== CONT  TestSetMessageMentionedJIDsRejectsMissingPayload/nil_message
+=== RUN   TestParticipantMentionJID/falls_back_to_phone_jid
+=== PAUSE TestParticipantMentionJID/falls_back_to_phone_jid
+=== CONT  TestSetMessageMentionedJIDs
+=== RUN   TestParticipantMentionJID/retains_lid_without_phone_number
+=== CONT  TestSetMessageMentionedJIDsRejectsMissingPayload/empty_wrapped_message
+=== PAUSE TestParticipantMentionJID/retains_lid_without_phone_number
+=== CONT  TestSetMessageMentionedJIDsRejectsMissingPayload/nil_wrapped_message
+=== CONT  TestSetMessageMentionedJIDsRejectsMissingPayload/unsupported_payload
+=== RUN   TestParticipantMentionJID/phone_number_without_primary_jid
+=== CONT  TestSetMessageMentionedJIDsRejectsMissingPayload/empty_message
+=== PAUSE TestParticipantMentionJID/phone_number_without_primary_jid
+=== RUN   TestParticipantMentionJID/missing_identity
+=== PAUSE TestParticipantMentionJID/missing_identity
+=== RUN   TestSetMessageMentionedJIDs/extended_text/nil_context
+=== CONT  TestParticipantMentionJID/falls_back_to_phone_jid
+=== PAUSE TestSetMessageMentionedJIDs/extended_text/nil_context
+=== RUN   TestSetMessageMentionedJIDs/extended_text/existing_context
+=== PAUSE TestSetMessageMentionedJIDs/extended_text/existing_context
+=== RUN   TestSetMessageMentionedJIDs/extended_text/wrapped/nil_context
+=== PAUSE TestSetMessageMentionedJIDs/extended_text/wrapped/nil_context
+=== RUN   TestSetMessageMentionedJIDs/extended_text/wrapped/existing_context
+=== PAUSE TestSetMessageMentionedJIDs/extended_text/wrapped/existing_context
+=== RUN   TestSetMessageMentionedJIDs/image/nil_context
+=== PAUSE TestSetMessageMentionedJIDs/image/nil_context
+=== RUN   TestSetMessageMentionedJIDs/image/existing_context
+=== CONT  TestParticipantMentionJID/prefers_phone_number_over_lid
+=== PAUSE TestSetMessageMentionedJIDs/image/existing_context
+=== RUN   TestSetMessageMentionedJIDs/image/wrapped/nil_context
+=== CONT  TestParticipantMentionJID/missing_identity
+=== PAUSE TestSetMessageMentionedJIDs/image/wrapped/nil_context
+=== RUN   TestSetMessageMentionedJIDs/image/wrapped/existing_context
+=== PAUSE TestSetMessageMentionedJIDs/image/wrapped/existing_context
+=== RUN   TestSetMessageMentionedJIDs/video/nil_context
+=== PAUSE TestSetMessageMentionedJIDs/video/nil_context
+=== RUN   TestSetMessageMentionedJIDs/video/existing_context
+=== PAUSE TestSetMessageMentionedJIDs/video/existing_context
+=== CONT  TestParticipantMentionJID/retains_lid_without_phone_number
+=== RUN   TestSetMessageMentionedJIDs/video/wrapped/nil_context
+=== CONT  TestParticipantMentionJID/phone_number_without_primary_jid
+--- PASS: TestParticipantMentionJID (0.00s)
+    --- PASS: TestParticipantMentionJID/falls_back_to_phone_jid (0.00s)
+    --- PASS: TestParticipantMentionJID/prefers_phone_number_over_lid (0.00s)
+    --- PASS: TestParticipantMentionJID/missing_identity (0.00s)
+    --- PASS: TestParticipantMentionJID/retains_lid_without_phone_number (0.00s)
+    --- PASS: TestParticipantMentionJID/phone_number_without_primary_jid (0.00s)
+=== PAUSE TestSetMessageMentionedJIDs/video/wrapped/nil_context
+=== RUN   TestSetMessageMentionedJIDs/video/wrapped/existing_context
+=== PAUSE TestSetMessageMentionedJIDs/video/wrapped/existing_context
+=== RUN   TestSetMessageMentionedJIDs/ptv/nil_context
+=== PAUSE TestSetMessageMentionedJIDs/ptv/nil_context
+=== RUN   TestSetMessageMentionedJIDs/ptv/existing_context
+=== PAUSE TestSetMessageMentionedJIDs/ptv/existing_context
+=== RUN   TestSetMessageMentionedJIDs/ptv/wrapped/nil_context
+=== PAUSE TestSetMessageMentionedJIDs/ptv/wrapped/nil_context
+=== RUN   TestSetMessageMentionedJIDs/ptv/wrapped/existing_context
+=== PAUSE TestSetMessageMentionedJIDs/ptv/wrapped/existing_context
+=== RUN   TestSetMessageMentionedJIDs/audio/nil_context
+=== PAUSE TestSetMessageMentionedJIDs/audio/nil_context
+=== RUN   TestSetMessageMentionedJIDs/audio/existing_context
+=== PAUSE TestSetMessageMentionedJIDs/audio/existing_context
+=== RUN   TestSetMessageMentionedJIDs/audio/wrapped/nil_context
+=== PAUSE TestSetMessageMentionedJIDs/audio/wrapped/nil_context
+=== RUN   TestSetMessageMentionedJIDs/audio/wrapped/existing_context
+=== PAUSE TestSetMessageMentionedJIDs/audio/wrapped/existing_context
+=== RUN   TestSetMessageMentionedJIDs/document/nil_context
+=== PAUSE TestSetMessageMentionedJIDs/document/nil_context
+=== RUN   TestSetMessageMentionedJIDs/document/existing_context
+=== PAUSE TestSetMessageMentionedJIDs/document/existing_context
+=== RUN   TestSetMessageMentionedJIDs/document/wrapped/nil_context
+=== PAUSE TestSetMessageMentionedJIDs/document/wrapped/nil_context
+=== RUN   TestSetMessageMentionedJIDs/document/wrapped/existing_context
+=== PAUSE TestSetMessageMentionedJIDs/document/wrapped/existing_context
+=== RUN   TestSetMessageMentionedJIDs/poll/nil_context
+=== PAUSE TestSetMessageMentionedJIDs/poll/nil_context
+=== RUN   TestSetMessageMentionedJIDs/poll/existing_context
+=== PAUSE TestSetMessageMentionedJIDs/poll/existing_context
+=== RUN   TestSetMessageMentionedJIDs/poll/wrapped/nil_context
+=== PAUSE TestSetMessageMentionedJIDs/poll/wrapped/nil_context
+=== RUN   TestSetMessageMentionedJIDs/poll/wrapped/existing_context
+=== PAUSE TestSetMessageMentionedJIDs/poll/wrapped/existing_context
+=== RUN   TestSetMessageMentionedJIDs/sticker/nil_context
+=== PAUSE TestSetMessageMentionedJIDs/sticker/nil_context
+=== RUN   TestSetMessageMentionedJIDs/sticker/existing_context
+=== PAUSE TestSetMessageMentionedJIDs/sticker/existing_context
+=== RUN   TestSetMessageMentionedJIDs/sticker/wrapped/nil_context
+=== PAUSE TestSetMessageMentionedJIDs/sticker/wrapped/nil_context
+=== RUN   TestSetMessageMentionedJIDs/sticker/wrapped/existing_context
+=== PAUSE TestSetMessageMentionedJIDs/sticker/wrapped/existing_context
+=== RUN   TestSetMessageMentionedJIDs/location/nil_context
+=== PAUSE TestSetMessageMentionedJIDs/location/nil_context
+=== RUN   TestSetMessageMentionedJIDs/location/existing_context
+=== PAUSE TestSetMessageMentionedJIDs/location/existing_context
+=== RUN   TestSetMessageMentionedJIDs/location/wrapped/nil_context
+=== PAUSE TestSetMessageMentionedJIDs/location/wrapped/nil_context
+=== RUN   TestSetMessageMentionedJIDs/location/wrapped/existing_context
+=== PAUSE TestSetMessageMentionedJIDs/location/wrapped/existing_context
+=== RUN   TestSetMessageMentionedJIDs/contact/nil_context
+=== PAUSE TestSetMessageMentionedJIDs/contact/nil_context
+=== RUN   TestSetMessageMentionedJIDs/contact/existing_context
+=== PAUSE TestSetMessageMentionedJIDs/contact/existing_context
+=== RUN   TestSetMessageMentionedJIDs/contact/wrapped/nil_context
+=== PAUSE TestSetMessageMentionedJIDs/contact/wrapped/nil_context
+=== RUN   TestSetMessageMentionedJIDs/contact/wrapped/existing_context
+=== PAUSE TestSetMessageMentionedJIDs/contact/wrapped/existing_context
+=== RUN   TestSetMessageMentionedJIDs/interactive/nil_context
+=== PAUSE TestSetMessageMentionedJIDs/interactive/nil_context
+=== RUN   TestSetMessageMentionedJIDs/interactive/existing_context
+=== PAUSE TestSetMessageMentionedJIDs/interactive/existing_context
+=== RUN   TestSetMessageMentionedJIDs/interactive/wrapped/nil_context
+=== PAUSE TestSetMessageMentionedJIDs/interactive/wrapped/nil_context
+=== RUN   TestSetMessageMentionedJIDs/interactive/wrapped/existing_context
+=== PAUSE TestSetMessageMentionedJIDs/interactive/wrapped/existing_context
+=== RUN   TestSetMessageMentionedJIDs/buttons/nil_context
+=== PAUSE TestSetMessageMentionedJIDs/buttons/nil_context
+=== RUN   TestSetMessageMentionedJIDs/buttons/existing_context
+=== PAUSE TestSetMessageMentionedJIDs/buttons/existing_context
+=== RUN   TestSetMessageMentionedJIDs/buttons/wrapped/nil_context
+=== PAUSE TestSetMessageMentionedJIDs/buttons/wrapped/nil_context
+=== RUN   TestSetMessageMentionedJIDs/buttons/wrapped/existing_context
+=== PAUSE TestSetMessageMentionedJIDs/buttons/wrapped/existing_context
+=== RUN   TestSetMessageMentionedJIDs/list/nil_context
+=== PAUSE TestSetMessageMentionedJIDs/list/nil_context
+=== RUN   TestSetMessageMentionedJIDs/list/existing_context
+=== PAUSE TestSetMessageMentionedJIDs/list/existing_context
+=== RUN   TestSetMessageMentionedJIDs/list/wrapped/nil_context
+=== PAUSE TestSetMessageMentionedJIDs/list/wrapped/nil_context
+=== RUN   TestSetMessageMentionedJIDs/list/wrapped/existing_context
+=== PAUSE TestSetMessageMentionedJIDs/list/wrapped/existing_context
+=== CONT  TestSetMessageMentionedJIDs/extended_text/nil_context
+=== CONT  TestSetMessageMentionedJIDs/poll/existing_context
+--- PASS: TestSetMessageMentionedJIDsRejectsMissingPayload (0.00s)
+    --- PASS: TestSetMessageMentionedJIDsRejectsMissingPayload/nil_message (0.00s)
+    --- PASS: TestSetMessageMentionedJIDsRejectsMissingPayload/empty_wrapped_message (0.00s)
+    --- PASS: TestSetMessageMentionedJIDsRejectsMissingPayload/nil_wrapped_message (0.00s)
+    --- PASS: TestSetMessageMentionedJIDsRejectsMissingPayload/unsupported_payload (0.00s)
+    --- PASS: TestSetMessageMentionedJIDsRejectsMissingPayload/empty_message (0.00s)
+=== CONT  TestSetMessageMentionedJIDs/interactive/nil_context
+--- PASS: TestSetMessageMentionedJIDsEmptyMentionsPreserveMessage (0.00s)
+=== CONT  TestSetMessageMentionedJIDs/contact/wrapped/existing_context
+=== CONT  TestSetMessageMentionedJIDs/contact/wrapped/nil_context
+=== CONT  TestSetMessageMentionedJIDs/contact/existing_context
+=== CONT  TestSetMessageMentionedJIDs/list/wrapped/existing_context
+=== CONT  TestSetMessageMentionedJIDs/contact/nil_context
+=== CONT  TestSetMessageMentionedJIDs/location/wrapped/existing_context
+=== CONT  TestSetMessageMentionedJIDs/location/wrapped/nil_context
+=== CONT  TestSetMessageMentionedJIDs/list/wrapped/nil_context
+=== CONT  TestSetMessageMentionedJIDs/location/nil_context
+=== CONT  TestSetMessageMentionedJIDs/sticker/wrapped/existing_context
+=== CONT  TestSetMessageMentionedJIDs/sticker/existing_context
+=== CONT  TestSetMessageMentionedJIDs/poll/wrapped/existing_context
+=== CONT  TestSetMessageMentionedJIDs/sticker/wrapped/nil_context
+=== CONT  TestSetMessageMentionedJIDs/poll/nil_context
+=== CONT  TestSetMessageMentionedJIDs/document/wrapped/existing_context
+=== CONT  TestSetMessageMentionedJIDs/document/wrapped/nil_context
+=== CONT  TestSetMessageMentionedJIDs/sticker/nil_context
+=== CONT  TestSetMessageMentionedJIDs/audio/existing_context
+=== CONT  TestSetMessageMentionedJIDs/ptv/wrapped/existing_context
+=== CONT  TestSetMessageMentionedJIDs/audio/wrapped/nil_context
+=== CONT  TestSetMessageMentionedJIDs/audio/nil_context
+=== CONT  TestSetMessageMentionedJIDs/document/existing_context
+=== CONT  TestSetMessageMentionedJIDs/document/nil_context
+=== CONT  TestSetMessageMentionedJIDs/audio/wrapped/existing_context
+=== CONT  TestSetMessageMentionedJIDs/ptv/nil_context
+=== CONT  TestSetMessageMentionedJIDs/video/wrapped/nil_context
+=== CONT  TestSetMessageMentionedJIDs/video/existing_context
+=== CONT  TestSetMessageMentionedJIDs/image/wrapped/existing_context
+=== CONT  TestSetMessageMentionedJIDs/video/nil_context
+=== CONT  TestSetMessageMentionedJIDs/image/nil_context
+=== CONT  TestSetMessageMentionedJIDs/buttons/wrapped/nil_context
+=== CONT  TestSetMessageMentionedJIDs/extended_text/wrapped/nil_context
+=== CONT  TestSetMessageMentionedJIDs/buttons/existing_context
+=== CONT  TestSetMessageMentionedJIDs/buttons/nil_context
+=== CONT  TestSetMessageMentionedJIDs/interactive/wrapped/existing_context
+=== CONT  TestSetMessageMentionedJIDs/interactive/wrapped/nil_context
+=== CONT  TestSetMessageMentionedJIDs/interactive/existing_context
+=== CONT  TestSetMessageMentionedJIDs/location/existing_context
+=== CONT  TestSetMessageMentionedJIDs/list/existing_context
+=== CONT  TestSetMessageMentionedJIDs/poll/wrapped/nil_context
+=== CONT  TestSetMessageMentionedJIDs/image/wrapped/nil_context
+=== CONT  TestSetMessageMentionedJIDs/extended_text/existing_context
+=== CONT  TestSetMessageMentionedJIDs/ptv/existing_context
+=== CONT  TestSetMessageMentionedJIDs/image/existing_context
+=== CONT  TestSetMessageMentionedJIDs/ptv/wrapped/nil_context
+=== CONT  TestSetMessageMentionedJIDs/buttons/wrapped/existing_context
+=== CONT  TestSetMessageMentionedJIDs/video/wrapped/existing_context
+=== CONT  TestSetMessageMentionedJIDs/extended_text/wrapped/existing_context
+=== CONT  TestSetMessageMentionedJIDs/list/nil_context
+--- PASS: TestSetMessageMentionedJIDs (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/poll/existing_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/extended_text/nil_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/interactive/nil_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/contact/wrapped/existing_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/list/wrapped/existing_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/contact/wrapped/nil_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/contact/existing_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/list/wrapped/nil_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/contact/nil_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/location/wrapped/nil_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/location/wrapped/existing_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/poll/wrapped/existing_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/location/nil_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/sticker/existing_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/sticker/wrapped/nil_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/poll/nil_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/sticker/wrapped/existing_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/sticker/nil_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/document/wrapped/existing_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/audio/existing_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/audio/wrapped/nil_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/document/wrapped/nil_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/ptv/wrapped/existing_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/audio/nil_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/document/existing_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/document/nil_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/audio/wrapped/existing_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/ptv/nil_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/video/existing_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/video/wrapped/nil_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/video/nil_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/image/wrapped/existing_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/buttons/wrapped/nil_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/image/nil_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/poll/wrapped/nil_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/extended_text/wrapped/nil_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/image/wrapped/nil_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/interactive/wrapped/nil_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/list/existing_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/extended_text/existing_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/ptv/existing_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/buttons/existing_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/buttons/nil_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/location/existing_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/interactive/wrapped/existing_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/interactive/existing_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/image/existing_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/ptv/wrapped/nil_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/buttons/wrapped/existing_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/video/wrapped/existing_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/extended_text/wrapped/existing_context (0.00s)
+    --- PASS: TestSetMessageMentionedJIDs/list/nil_context (0.00s)
+PASS

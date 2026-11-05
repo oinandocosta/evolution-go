@@ -1,11 +1,14 @@
 package user_handler
 
 import (
+	"errors"
 	"net/http"
+	"strings"
 
 	instance_model "github.com/evolution-foundation/evolution-go/pkg/instance/model"
 	user_service "github.com/evolution-foundation/evolution-go/pkg/user/service"
 	"github.com/gin-gonic/gin"
+	"go.mau.fi/whatsmeow"
 )
 
 type UserHandler interface {
@@ -111,25 +114,30 @@ func (u *userHandler) CheckUser(ctx *gin.Context) {
 
 // Get a user's avatar
 // @Summary Get a user's avatar
-// @Description Get a user's avatar
+// @Description Returns profile-picture metadata with a download URL in data.url. The request has a total eight-second budget. Query failures include a stable code alongside error; missing photos return 404 and unauthorized photo queries return 403.
 // @Tags User
 // @Accept json
 // @Produce json
 // @Param message body user_service.GetAvatarStruct true "Avatar data"
-// @Success 200 {object} gin.H "success"
-// @Failure 400 {object} gin.H "Error on validation"
-// @Failure 500 {object} gin.H "Internal server error"
+// @Success 200 {object} gin.H "Profile-picture metadata with the download URL in data.url"
+// @Failure 400 {object} gin.H "Invalid or missing phone number"
+// @Failure 401 {object} gin.H "Invalid API key or WhatsApp session is not authenticated"
+// @Failure 403 {object} gin.H "PROFILE_PICTURE_UNAUTHORIZED: WhatsApp did not authorize the profile picture query"
+// @Failure 404 {object} gin.H "PROFILE_PICTURE_NOT_SET: profile picture is not available"
+// @Failure 429 {object} gin.H "WhatsApp rate limit"
+// @Failure 500 {object} gin.H "AVATAR_QUERY_FAILED: internal query failure"
+// @Failure 504 {object} gin.H "WhatsApp query timeout or cancellation"
 // @Router /user/avatar [post]
 func (u *userHandler) GetAvatar(ctx *gin.Context) {
-	getInstance := ctx.MustGet("instance")
+	getInstance, _ := ctx.Get("instance")
 
 	instance, ok := getInstance.(*instance_model.Instance)
-	if !ok {
-		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "instance not found"})
+	if !ok || instance == nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "instance not found", "code": "AVATAR_QUERY_FAILED"})
 		return
 	}
 
-	var data *user_service.GetAvatarStruct
+	var data user_service.GetAvatarStruct
 	err := ctx.ShouldBindBodyWithJSON(&data)
 	if err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -141,18 +149,40 @@ func (u *userHandler) GetAvatar(ctx *gin.Context) {
 		return
 	}
 
-	if data.Number == "" {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "phone number is required"})
+	pic, err := u.userService.GetAvatar(ctx.Request.Context(), &data, instance)
+	if err != nil {
+		writeAvatarError(ctx, err)
 		return
 	}
-
-	pic, err := u.userService.GetAvatar(data, instance)
-	if err != nil {
-		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	if pic == nil || strings.TrimSpace(pic.URL) == "" {
+		writeAvatarError(ctx, whatsmeow.ErrProfilePictureNotSet)
 		return
 	}
 
 	ctx.JSON(http.StatusOK, gin.H{"message": "success", "data": pic})
+}
+
+// Preserve the error field and distinguish unavailable photos from query
+// failures without exposing upstream database, proxy or session details.
+func writeAvatarError(ctx *gin.Context, err error) {
+	status := http.StatusInternalServerError
+	message := "failed to query WhatsApp"
+	code := user_service.AvatarErrorCode(err)
+	switch code {
+	case "AVATAR_INVALID_NUMBER":
+		status, message = http.StatusBadRequest, "invalid phone number"
+	case "WHATSAPP_SESSION_UNAUTHENTICATED":
+		status, message = http.StatusUnauthorized, "WhatsApp session is not authenticated"
+	case "PROFILE_PICTURE_UNAUTHORIZED":
+		status = http.StatusForbidden
+	case "PROFILE_PICTURE_NOT_SET":
+		status = http.StatusNotFound
+	case "WHATSAPP_RATE_LIMITED":
+		status, message = http.StatusTooManyRequests, "WhatsApp rate limit"
+	case "AVATAR_QUERY_TIMEOUT":
+		status, message = http.StatusGatewayTimeout, "WhatsApp query timeout or cancellation"
+	}
+	ctx.JSON(status, gin.H{"error": message, "code": code})
 }
 
 // Get a user's contacts
@@ -294,12 +324,12 @@ func (u *userHandler) BlockContact(ctx *gin.Context) {
 	getInstance := ctx.MustGet("instance")
 
 	instance, ok := getInstance.(*instance_model.Instance)
-	if !ok {
+	if !ok || instance == nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "instance not found"})
 		return
 	}
 
-	var data *user_service.BlockStruct
+	var data user_service.BlockStruct
 	err := ctx.ShouldBindBodyWithJSON(&data)
 	if err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -316,9 +346,9 @@ func (u *userHandler) BlockContact(ctx *gin.Context) {
 		return
 	}
 
-	resp, err := u.userService.BlockContact(data, instance)
+	resp, err := u.userService.BlockContact(&data, instance)
 	if err != nil {
-		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeBlocklistError(ctx, err)
 		return
 	}
 
@@ -340,12 +370,12 @@ func (u *userHandler) UnblockContact(ctx *gin.Context) {
 	getInstance := ctx.MustGet("instance")
 
 	instance, ok := getInstance.(*instance_model.Instance)
-	if !ok {
+	if !ok || instance == nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "instance not found"})
 		return
 	}
 
-	var data *user_service.BlockStruct
+	var data user_service.BlockStruct
 	err := ctx.ShouldBindBodyWithJSON(&data)
 	if err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -362,13 +392,21 @@ func (u *userHandler) UnblockContact(ctx *gin.Context) {
 		return
 	}
 
-	resp, err := u.userService.UnlockContact(data, instance)
+	resp, err := u.userService.UnlockContact(&data, instance)
 	if err != nil {
-		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeBlocklistError(ctx, err)
 		return
 	}
 
 	ctx.JSON(http.StatusOK, gin.H{"message": "success", "data": resp})
+}
+
+func writeBlocklistError(ctx *gin.Context, err error) {
+	status := http.StatusInternalServerError
+	if errors.Is(err, user_service.ErrInvalidUserNumber) || errors.Is(err, whatsmeow.ErrRecipientNotOnWhatsApp) {
+		status = http.StatusBadRequest
+	}
+	ctx.JSON(status, gin.H{"error": err.Error()})
 }
 
 // Get a user's block list
@@ -384,7 +422,7 @@ func (u *userHandler) GetBlockList(ctx *gin.Context) {
 	getInstance := ctx.MustGet("instance")
 
 	instance, ok := getInstance.(*instance_model.Instance)
-	if !ok {
+	if !ok || instance == nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "instance not found"})
 		return
 	}
@@ -509,12 +547,12 @@ func (u *userHandler) SetProfileStatus(ctx *gin.Context) {
 	getInstance := ctx.MustGet("instance")
 
 	instance, ok := getInstance.(*instance_model.Instance)
-	if !ok {
+	if !ok || instance == nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "instance not found"})
 		return
 	}
 
-	var data *user_service.SetProfileStatusStruct
+	var data user_service.SetProfileStatusStruct
 	err := ctx.ShouldBindBodyWithJSON(&data)
 	if err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -526,7 +564,7 @@ func (u *userHandler) SetProfileStatus(ctx *gin.Context) {
 		return
 	}
 
-	resp, err := u.userService.SetProfileStatus(data, instance)
+	resp, err := u.userService.SetProfileStatus(&data, instance)
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

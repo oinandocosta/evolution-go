@@ -55,6 +55,7 @@ import (
 	passkey_handler "github.com/evolution-foundation/evolution-go/pkg/passkey/handler"
 	poll_handler "github.com/evolution-foundation/evolution-go/pkg/poll/handler"
 	routes "github.com/evolution-foundation/evolution-go/pkg/routes"
+	"github.com/evolution-foundation/evolution-go/pkg/runtimestate"
 	send_handler "github.com/evolution-foundation/evolution-go/pkg/sendMessage/handler"
 	send_service "github.com/evolution-foundation/evolution-go/pkg/sendMessage/service"
 	server_handler "github.com/evolution-foundation/evolution-go/pkg/server/handler"
@@ -83,8 +84,8 @@ func init() {
 }
 
 func setupRouter(db *gorm.DB, authDB *sql.DB, sqliteDB *sql.DB, config *config.Config, conn *amqp.Connection, exPath string, runtimeCtx *core.RuntimeContext) *gin.Engine {
-	killChannel := make(map[string](chan bool))
-	clientPointer := make(map[string]*whatsmeow.Client)
+	killChannel := runtimestate.New[string, *runtimestate.StopSignal]()
+	clientPointer := runtimestate.New[string, *whatsmeow.Client]()
 
 	loggerWrapper := logger_wrapper.NewLoggerManager(config)
 
@@ -200,7 +201,10 @@ func setupRouter(db *gorm.DB, authDB *sql.DB, sqliteDB *sql.DB, config *config.C
 	// NOVO: PollHandler usando PollService já inicializado no whatsmeowService (evita dupla inicialização)
 	pollHandler := poll_handler.NewPollHandler(whatsmeowService.GetPollService(), loggerWrapper)
 
-	r := gin.Default()
+	r := gin.New()
+	// WebSocket authentication uses a query token. Gin's default access logger
+	// includes the raw query, so keep this route out of automatic request logs.
+	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{SkipPaths: []string{"/ws"}}), gin.Recovery())
 
 	// CORS middleware — must be before everything else
 	r.Use(func(c *gin.Context) {
@@ -250,7 +254,7 @@ func setupRouter(db *gorm.DB, authDB *sql.DB, sqliteDB *sql.DB, config *config.C
 		instanceId := c.Query("instanceId")
 
 		if token != config.GlobalApiKey {
-			logger.LogError("Token inválido: %s", token)
+			logger.LogError("Token inválido na conexão WebSocket")
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Token inválido"})
 			return
 		}

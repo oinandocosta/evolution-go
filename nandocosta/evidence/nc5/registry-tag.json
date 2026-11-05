@@ -1,0 +1,8 @@
+{
+  "name": "0.7.2-nc.5",
+  "digest": "sha256:8ae70d86964d4a442f9fa8c4551ea3a45e2ca85707242905ef63949b3793c715",
+  "last_updated": "2026-11-04T22:00:57.12014Z",
+  "image_id": "sha256:fd9b40f049bc07a1329b917cef755d5c56013235695924bb137a6e9775b4de6a",
+  "platform": "linux/amd64",
+  "anonymous_pull_verified": true
+}

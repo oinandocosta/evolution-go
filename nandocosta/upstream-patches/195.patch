@@ -1,0 +1,59 @@
+From 16c4be6e9a0ae8a0bbc41f8b2790a362a7a4e2e2 Mon Sep 17 00:00:00 2001
+From: EcoosUP <duplaconversao@gmail.com>
+Date: Thu, 10 Sep 2026 11:27:39 -0300
+Subject: [PATCH] fix(whatsmeow): Archive event panics before reaching the
+ webhook
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The Archive case asserts postMap["data"] to map[string]interface{}, but at that
+point it still holds the raw *events.Archive. The assertion panics on every
+archive event:
+
+    Event handler panicked while handling a *events.Archive:
+    interface conversion: interface {} is *events.Archive,
+    not map[string]interface {}
+
+whatsmeow recovers the panic and logs it, so nothing crashes — the event simply
+never reaches the webhook, silently.
+
+Every other case in this switch marshals and unmarshals postMap["data"] into a
+map before asserting. Archive was the only one missing that step. Six call sites
+do the assertion; the other five are already guarded.
+---
+ pkg/whatsmeow/service/whatsmeow.go | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/pkg/whatsmeow/service/whatsmeow.go b/pkg/whatsmeow/service/whatsmeow.go
+index 366f0edb1..c25ae52a1 100644
+--- a/pkg/whatsmeow/service/whatsmeow.go
++++ b/pkg/whatsmeow/service/whatsmeow.go
+@@ -1817,6 +1817,27 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
+ 		doWebhook = true
+ 		postMap["event"] = "Archive"
+ 
++		// postMap["data"] still holds the raw event at this point, so the type
++		// assertion below panicked on every Archive event. Same marshal/unmarshal
++		// step every other case in this switch already does.
++		if postMap["data"] != nil {
++			jsonBytes, err := json.Marshal(postMap["data"])
++			if err != nil {
++				mycli.loggerWrapper.GetLogger(mycli.userID).LogError("[%s] Failed to marshal postMap['data']: %v", mycli.userID, err)
++				return
++			}
++
++			var parsed map[string]interface{}
++			if err := json.Unmarshal(jsonBytes, &parsed); err != nil {
++				mycli.loggerWrapper.GetLogger(mycli.userID).LogError("[%s] Failed to unmarshal postMap['data'] to map[string]interface{}: %v", mycli.userID, err)
++				return
++			}
++
++			postMap["data"] = parsed
++		} else {
++			postMap["data"] = make(map[string]interface{})
++		}
++
+ 		dataMap := postMap["data"].(map[string]interface{})
+ 		dataMap["JID"] = evt.JID
+ 		dataMap["Timestamp"] = evt.Timestamp

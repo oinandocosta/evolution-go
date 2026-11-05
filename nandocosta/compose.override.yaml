@@ -1,0 +1,4 @@
+# Mesclar somente esta referencia no servico existente; preservar ambiente, volumes, bancos e redes.
+services:
+  evolutiongo:
+    image: nandocosta/evolution-go:0.7.2-nc.5@sha256:8ae70d86964d4a442f9fa8c4551ea3a45e2ca85707242905ef63949b3793c715

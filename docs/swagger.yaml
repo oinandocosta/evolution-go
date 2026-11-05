@@ -9511,7 +9511,7 @@ paths:
     post:
       consumes:
       - application/json
-      description: Get a user's avatar
+      description: Returns profile-picture metadata with a download URL in data.url. The request has a total eight-second budget. Query failures include a stable code alongside error; missing photos return 404 and unauthorized photo queries return 403.
       parameters:
       - description: Avatar data
         in: body
@@ -9523,15 +9523,35 @@ paths:
       - application/json
       responses:
         "200":
-          description: success
+          description: Profile-picture metadata with the download URL in data.url
           schema:
             $ref: '#/definitions/gin.H'
         "400":
-          description: Error on validation
+          description: Invalid or missing phone number
+          schema:
+            $ref: '#/definitions/gin.H'
+        "401":
+          description: Invalid API key or WhatsApp session is not authenticated
+          schema:
+            $ref: '#/definitions/gin.H'
+        "403":
+          description: 'PROFILE_PICTURE_UNAUTHORIZED: WhatsApp did not authorize the profile picture query'
+          schema:
+            $ref: '#/definitions/gin.H'
+        "404":
+          description: 'PROFILE_PICTURE_NOT_SET: profile picture is not available'
+          schema:
+            $ref: '#/definitions/gin.H'
+        "429":
+          description: WhatsApp rate limit
           schema:
             $ref: '#/definitions/gin.H'
         "500":
-          description: Internal server error
+          description: 'AVATAR_QUERY_FAILED: internal query failure'
+          schema:
+            $ref: '#/definitions/gin.H'
+        "504":
+          description: WhatsApp query timeout or cancellation
           schema:
             $ref: '#/definitions/gin.H'
       summary: Get a user's avatar

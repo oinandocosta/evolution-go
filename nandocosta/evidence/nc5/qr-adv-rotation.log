@@ -1,0 +1,25 @@
+QR ADV secret compatibility verification - 2026-11-04
+
+Scope: pkg/whatsmeow/service/qr_lifecycle.go, the RotateADVSecret case in whatsmeow.go, and qr_secret_rotation_test.go.
+Dependency under test: go.mau.fi/whatsmeow v0.0.0-20261102152715-54038813c47f.
+All test containers were disposable, used --network none and mounted source read-only at /candidate.
+Tests use synthetic QR references/secrets, repository/event fakes and temporary logs. No real session, persistent database, registry publication or deployment was used.
+
+Command:
+docker run --rm --network none --mount type=bind,source=<workspace>,target=/candidate,readonly -w /candidate nandocosta/evolution-go:0.7.2-nc.5-dependencies go test ./pkg/whatsmeow/service -run '^TestQR' -count=1 -timeout 90s
+Output:
+ok  	github.com/evolution-foundation/evolution-go/pkg/whatsmeow/service	0.052s
+Exit: 0
+
+Command:
+docker run --rm --network none --mount type=bind,source=<workspace>,target=/candidate,readonly -w /candidate nandocosta/evolution-go:0.7.2-nc.5-dependencies go test -race ./pkg/whatsmeow/service -run '^TestQR' -count=1 -timeout 90s
+Output:
+ok  	github.com/evolution-foundation/evolution-go/pkg/whatsmeow/service	1.226s
+Exit: 0
+
+Also ran gofmt on the three Go files and git diff --check for the same scope; the check returned exit 0 with only Git line-ending notices.
+
+New coverage: current QR republished after two successive renewals, remaining references updated, non-ADV fields preserved, caller-owned batch copied, same worker retained, QR count preserved for the same reference, coalesced renewals before publication, pairing winning over an in-flight renewal, late events after pairing, active passkey pause, stale generation isolation, no forced logout, and QR credentials absent from temporary instance logs.
+The existing QR lifecycle tests also ran under the race detector.
+
+This validates adapter behavior with synthetic events; it does not claim a real WhatsApp server sent companion_reg_refresh during testing.

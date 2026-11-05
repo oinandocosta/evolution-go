@@ -1,0 +1,9 @@
+ARG VERIFY_IMAGE=nandocosta/evolution-go:0.7.2-nc.6-verify
+ARG RUNTIME_IMAGE=nandocosta/evolution-go:0.7.2-nc.6
+
+FROM ${VERIFY_IMAGE} AS tests
+RUN go test -c ./pkg/sendMessage/service -o /tmp/thumbnail.test
+FROM ${RUNTIME_IMAGE}
+COPY --from=tests /tmp/thumbnail.test /tmp/thumbnail.test
+ENTRYPOINT ["/tmp/thumbnail.test"]
+CMD ["-test.run", "Thumbnail|Dimensions|Orientation|Orient", "-test.v"]

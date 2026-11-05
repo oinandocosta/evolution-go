@@ -1,0 +1,16 @@
+{
+  "image": "nandocosta/evolution-go:0.7.2-nc.1",
+  "image_id": "sha256:90d7db0e6d2a8b74128d8662551f4345029476a660768d86d7cbd58d0ac31b96",
+  "platform": "linux/amd64",
+  "archive": "build/nandocosta-evolution-go-0.7.2-nc.1.tar",
+  "archive_bytes": 221850112,
+  "archive_sha256": "f3729b9e4a701bfbb2e8d0aaafbbef08cb7b14006bd2ab2475ed7b05a1fc16c5",
+  "published": false,
+  "production_deployed": false,
+  "live_qr_passed": true,
+  "postgres_pool_passed": true,
+  "synthetic_auth_schema": 14,
+  "paired_account_validation": "pending",
+  "personal_whatsapp_not_used": true,
+  "disposable_test_containers_removed": true
+}
