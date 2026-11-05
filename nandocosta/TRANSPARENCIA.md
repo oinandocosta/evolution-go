@@ -1,6 +1,6 @@
 # Transparência da distribuição nandocosta e manutenção em relação à Evolution GO
 
-**Estado em 4 de novembro de 2026:** a nc.6 e `latest` estão publicadas para Linux AMD64. Os testes funcionais locais ARM64 passaram por emulação, mas o detector de corridas não conseguiu inicializar nesse ambiente. O workflow nativo está preparado; sua execução e a publicação ARM64 continuam pendentes. `latest` permanece na imagem AMD64 existente. Os caminhos de código neste documento partem da raiz do repositório.
+**Estado após a publicação multiarch:** `latest` e `0.7.2-nc.6-multiarch` estão publicadas para Linux AMD64 e ARM64. A variante ARM64 passou nos gates canônicos em runner nativo; a tag fixa nc.6 e seu manifest AMD64 existente foram preservados. A [execução nativa](https://github.com/oinandocosta/evolution-go/actions/runs/41948461407) e o [registro do artefato](evidence/arm64/artifact.json) identificam fonte, testes, digests e limites. Os caminhos de código neste documento partem da raiz do repositório.
 
 Navegação: [notas da distribuição](README.md), [ARM64](ARM64.md), [manifesto canônico](RELEASE.json) e [futuras atualizações oficiais](#como-incorporar-futuras-atualizações-oficiais).
 
@@ -10,7 +10,7 @@ Esta é uma distribuição independente da Evolution GO, baseada no [código da 
 
 O módulo Go e o console mantêm a identidade de origem. `LICENSE`, `NOTICE` e `TRADEMARKS.md` foram preservados; a imagem passou a incluí-los explicitamente, junto com `/app/nandocosta-release.json`. A verificação de licença/ativação permanece. Não foram removidos mecanismos de ativação ou alteradas as condições do produto original. Os patches arquivados mantêm a identificação dos autores das contribuições. As referências aos PRs abaixo reconhecem essas origens sem atribuir aos seus autores as adaptações e decisões posteriores deste fork.
 
-O inventário compara a base acima com o código desta distribuição e as preparações ARM64 ainda não publicadas. A versão pública do fork parte do commit upstream `9337afc47e10b86cc896a6f432240e40fee95dd1`, preserva seu histórico original e consolida as alterações posteriores. O histórico operacional local usado nas releases nc.2–nc.6 não será enviado ao repositório público. Identificadores de commits locais presentes em notas ou evidências antigas registram aquele processo de build; não são commits navegáveis deste fork nem provas de merge dos PRs oficiais.
+O inventário compara a base acima com o código desta distribuição e o suporte ARM64 homologado e a publicação multiarch. A versão pública do fork parte do commit upstream `9337afc47e10b86cc896a6f432240e40fee95dd1`, preserva seu histórico original e consolida as alterações posteriores. O histórico operacional local usado nas releases nc.2–nc.6 não será enviado ao repositório público. Identificadores de commits locais presentes em notas ou evidências antigas registram aquele processo de build; não são commits navegáveis deste fork nem provas de merge dos PRs oficiais.
 
 O cadastro canônico dos commits de origem, partes selecionadas, dependências e schema é o [RELEASE.json](RELEASE.json). Os históricos [nc.2](RELEASE-nc2.md), [nc.3](RELEASE-nc3.md), [nc.4](RELEASE-nc4.md), [nc.5](RELEASE-nc5.md), as [notas atuais](README.md), o [diagnóstico do PR 199](PR-199.md) e as [evidências por release](evidence/README.md) complementam esse cadastro. A rastreabilidade pública usa o manifesto, os PRs/commits upstream citados, o código consolidado e essas evidências; não depende de publicar o histórico operacional local. Veja também a [procedência e sanitização dos patches](upstream-patches/README.md). Este documento explica o conjunto, sem criar uma segunda lista normativa de versões ou digests.
 
@@ -149,7 +149,7 @@ A preparação atual usa dois jobs nativos: `ubuntu-24.04` para Linux AMD64 e `u
 
 Cada job exige a arquitetura nativa e o builder com driver `docker`, executa os gates do Dockerfile canônico e roda os testes de envio/mídia na imagem final, exigindo pelo menos 43 testes e nenhum SKIP nessa suíte de runtime. Por padrão, exporta somente a imagem final, com checksums, metadados e logs, sem credenciais de registro. A imagem de verificação é usada e inspecionada no runner, mas não integra o arquivo tar exportado. QR live, PostgreSQL opt-in e migração cruzada não são executados por essa CI e estão identificados separadamente nos metadados.
 
-No modo opcional de publicação, um job posterior aos dois jobs nativos confere os artifacts e os checksums, carrega as imagens e recusa tags existentes. Só então envia os sufixos e cria uma nova tag de versão com exatamente os dois digests/plataformas aprovados, sem `--append` nem promoção de `latest`. Essa preparação ainda não comprova execução real no GitHub; a nova versão exige gates aprovados e evidências antes de publicação. O procedimento completo está em [ARM64.md](ARM64.md).
+No modo opcional de publicação, um job posterior aos dois jobs nativos confere os artifacts e os checksums, carrega as imagens e recusa tags existentes. Só então envia os sufixos e cria uma nova tag de versão com exatamente os dois digests/plataformas aprovados, sem `--append` nem promoção de `latest`. O [run 41948461407](https://github.com/oinandocosta/evolution-go/actions/runs/41948461407) aprovou os dois jobs nativos em modo build-only. A publicação multiarch posterior usou o tar ARM aprovado e o manifest AMD64 existente, como registrado abaixo. O procedimento completo está em [ARM64.md](ARM64.md).
 
 `nandocosta/Dockerfile.runtime-tests` passou a aceitar `VERIFY_IMAGE` e `RUNTIME_IMAGE`, mantendo defaults, para executar o binário de testes ARM nas bibliotecas da imagem ARM final. `nandocosta/ARM64.md` descreve build/testes isolados, limitações de emulação e publicação preservando o artefato amd64 existente. Não houve alteração do algoritmo da aplicação nem atualização de dependência para ARM64.
 
@@ -157,7 +157,7 @@ O teste `TestSessionQueryDatabaseContext`, em `pkg/instance/repository/query_con
 
 ### Resultados locais ARM64 e limite do ambiente de emulação
 
-Os resultados abaixo são da execução Linux ARM64 por QEMU 10.2.3, com Go 1.26.10. O Dockerfile canônico continua exigindo todos os gates, inclusive race. Para investigar os caminhos funcionais apesar da limitação do detector, foi criada uma candidata **somente local**, usando `build/arm64/Dockerfile.candidate`, temporário e ignorado, que remove apenas a etapa race. Essa candidata não é a imagem estável aprovada e não foi publicada.
+Os resultados abaixo são da execução Linux ARM64 por QEMU 10.2.3, com Go 1.26.10. O Dockerfile canônico continua exigindo todos os gates, inclusive race. Para investigar os caminhos funcionais apesar da limitação do detector, foi criada uma candidata **somente local**, usando `build/arm64/Dockerfile.candidate`, temporário e ignorado, que remove apenas a etapa race. Essa candidata sem race ficou local e não foi publicada. A imagem ARM estável posterior veio do build canônico nativo descrito na próxima subseção.
 
 | Verificação | Resultado e alcance |
 | --- | --- |
@@ -167,7 +167,7 @@ Os resultados abaixo são da execução Linux ARM64 por QEMU 10.2.3, com Go 1.26
 | Handshake/QR com dispositivo efêmero | PASS: seis QR codes em 1,58 s, sem pareamento e sem publicar seu conteúdo. |
 | Pool PostgreSQL | PASS: 64 inicializações concorrentes reutilizando pool limitado a duas conexões. |
 | Migração entre arquiteturas | PASS: fixture criada pela nc.4 amd64/schema 14, aberta pela nc.6 ARM/schema 16; três sessões sintéticas, 19 tabelas, 64 leituras concorrentes, leitura/gravação, isolamento por instância e restart/idempotência. |
-| Detector race ARM | **Não executou os testes:** o runtime abortou na inicialização com VMA de 47 bits, exigindo 48. Gate canônico não aprovado. |
+| Detector race ARM naquele ambiente QEMU | **Não executou os testes:** o runtime abortou na inicialização com VMA de 47 bits, exigindo 48. O gate desse ambiente não foi aprovado; o gate nativo posterior passou. |
 
 Na migração cruzada, o SHA-256 dos dados/colunas legados permaneceu `de25362721022af8210c58fdfe68890e4a2cea42d4667e81818d0b2003fb8a79`. Os novos campos mantiveram o hash `2ae724aff0fbd8d4194c964de0f32132295021b756859bf1df8518fde076c7ab` depois de escrita e nova verificação. Não foram usados dados de produção, conta pareada, downgrade SQL ou edição manual do número de schema.
 
@@ -175,11 +175,30 @@ Os registros locais são `build/arm64/verification-build-retry.log`, `runtime-te
 
 O aborto do detector é uma limitação de inicialização do ThreadSanitizer no layout de memória oferecido pela emulação, e não um teste que encontrou uma corrida no código da aplicação. O log informa `unsupported VMA range` e `Found 47 - Supported 48` antes de rodar os testes. A [issue LLVM 151931](https://github.com/llvm/llvm-project/issues/151931) documenta a classe de falha em AArch64 por QEMU; o [PR LLVM 220040](https://github.com/llvm/llvm-project/pull/220040) trata especificamente o suporte de 47 bits no runtime Go. A existência desse PR não prova que o binário do detector distribuído com a toolchain usada já o contém.
 
-A inspeção do pacote oficial Go 1.27.3 nesta investigação também não ofereceu a correção pronta: seu [README do runtime race](https://github.com/golang/go/blob/go1.27.3/src/runtime/race/README) ainda registra o artefato ARM derivado da revisão LLVM `51bfeff0e4b0757ff773da6882f4d538996c9b04`. Não foi substituído o runtime oficial por um `.syso` próprio nem retirado o gate da imagem estável. A validação seguinte usa o workflow nativo preparado para aprovar race e repetir runtime. QR/PostgreSQL e migração cruzada exigem execução opt-in separada e registro de evidências. Nenhuma execução remota está confirmada neste checkpoint.
+A inspeção do pacote oficial Go 1.27.3 nesta investigação também não ofereceu a correção pronta: seu [README do runtime race](https://github.com/golang/go/blob/go1.27.3/src/runtime/race/README) ainda registra o artefato ARM derivado da revisão LLVM `51bfeff0e4b0757ff773da6882f4d538996c9b04`. Não foi substituído o runtime oficial por um `.syso` próprio nem retirado o gate da imagem estável. Naquele checkpoint ainda não havia execução remota confirmada. A etapa seguinte aprovou race e runtime no workflow nativo, conforme a subseção abaixo. QR/PostgreSQL e migração cruzada exigem execução opt-in separada e não foram repetidos pela CI nativa.
 
-**Estado de publicação ARM:** a imagem canônica ARM final e o índice multiarch continuam pendentes pelo gate race não executado. Não houve publicação ARM nem alteração de `latest` nesta homologação; a imagem AMD64 nc.6 existente permanece intacta, com digest `sha256:17689c858288a334407f3003e5b46a2f106fb854ce76ad0873d343dce2b7e3ea`. Testar por QEMU não equivale a testar em hardware ARM físico. ARM de 32 bits (`linux/arm/v7`) permanece fora do escopo.
+**Estado naquele checkpoint local:** a candidata ARM e o índice ainda não estavam aprovados. Não houve publicação nem alteração de `latest` naquela etapa QEMU. A etapa nativa e a publicação posteriores estão registradas abaixo; o manifest AMD64 nc.6 permaneceu intacto, com digest `sha256:17689c858288a334407f3003e5b46a2f106fb854ce76ad0873d343dce2b7e3ea`. ARM de 32 bits (`linux/arm/v7`) permanece fora do escopo.
 
-A estratégia preparada mantém a tag fixa amd64 nc.6 e seu digest filho. Depois de aprovar ARM64, publica-se uma variante própria e cria-se um índice com exatamente os dois manifests executáveis por digest; somente depois esse índice é promovido para `latest`. Um `--append` cego pode manter dois digests diferentes da mesma plataforma: os dry-runs mostraram que Buildx deduplica o digest idêntico, mas não garante unicidade de arquitetura. Inspecionar plataforma/digest e validar pulls antes da promoção. Nada dessa preparação exige redeploy ou alteração de dados do ambiente amd64 existente.
+A estratégia aplicada manteve a tag fixa amd64 nc.6 e seu digest filho. Depois de aprovar ARM64, publicou-se uma variante própria e criou-se um índice com exatamente os dois manifests executáveis por digest; esse índice foi validado e promovido para `latest`. Um `--append` cego pode manter dois digests diferentes da mesma plataforma: os dry-runs mostraram que Buildx deduplica o digest idêntico, mas não garante unicidade de arquitetura. Inspecionar plataforma/digest e validar pulls antes da promoção. Nada dessa preparação exige redeploy ou alteração de dados do ambiente amd64 existente.
+
+### Resultado nativo e publicação multiarch
+
+A [execução nativa 41948461407](https://github.com/oinandocosta/evolution-go/actions/runs/41948461407), no commit `5481e977006ab0b3c11ce2c976f78941f2ffa0fb`, concluiu com sucesso. A fonte ARM corresponde à árvore Git `1b2062f0e8016f10d74e2ff0cf6f3cbe4e0dadd5`; os seis source-inputs do artifact foram conferidos contra os Git blobs desse commit, sem usar como identidade um hash agregado de arquivos locais com possíveis diferenças de fim de linha.
+
+| Verificação | Resultado e alcance |
+| --- | --- |
+| Preflight | PASS: versão, manifesto de release e sete testes da trava de publicação pública. |
+| Build canônico AMD64 e ARM64 | PASS em runners nativos: Go, vet e race obrigatórios, sem QEMU e sem remover gates. |
+| Runtime ARM final | 43 testes de nível principal, zero falhas e zero SKIP; miniatura PDF incluída. A etapa de runtime AMD64 também passou. |
+| Imagem ARM aprovada | Image ID `sha256:f901a1689ff5b1c4b56f754c1692ba376c1bb7e42bdebe21c187ac7e3e23f4cf`, proveniente do artifact GitHub `13379872218`; ZIP, tar e source-inputs conferidos. |
+| Publicação da CI | Skipped: o run foi build-only. Publicação posterior manual do tar aprovado, sem recompilar. |
+| Índice publicado | `latest` e `0.7.2-nc.6-multiarch` apontam para `sha256:e75b89deb9c43157602c93e42d75d26d4aa01d0ef3db20ea9265f760bb663121`, com exatamente duas plataformas únicas. |
+| AMD64 preservado | A tag fixa `0.7.2-nc.6` e o filho `sha256:17689c858288a334407f3003e5b46a2f106fb854ce76ad0873d343dce2b7e3ea` continuam os mesmos. O novo build AMD64 da CI não substituiu esse manifest. |
+| ARM64 publicado | `0.7.2-nc.6-arm64`, manifest `sha256:b95241edd9c86a6add88bc448f6460bc53afe96df79454c1c6f04bb58e3df668`. |
+| Pull anônimo e smoke | PASS em ambas as plataformas, com Image IDs esperados; loader ARM aarch64. |
+| Produção | Nenhum redeploy, alteração de stack, configuração, banco, volume ou sessão por esta publicação. |
+
+O [registro público do artefato](evidence/arm64/artifact.json) mantém as identidades e os limites dessa etapa. QR live, PostgreSQL opt-in e migração sintética entre arquiteturas não foram executados nesse run nativo; os resultados locais por QEMU acima são evidências separadas. Não houve novo pareamento, envio/recebimento real ou teste prolongado de estabilidade ARM64 nessa CI. Runners ARM64 nativos hospedados não equivalem à homologação de todo equipamento ARM de destino.
 
 ## Mapa de manutenção: área, arquivos, origem e regressões
 
@@ -236,7 +255,7 @@ As correções Laravel/PHP do Evolve Agentes — leitura de `data.url`, download
 
 ## Pendências de validação e manutenção
 
-- Executar os gates canônicos em ARM nativo e registrar o resultado real. Os testes funcionais locais já passaram, mas o detector race não executou sob QEMU; isso mantém pendentes a imagem ARM estável, o índice e os pulls publicados. Identificadores novos só devem ser acrescentados depois de efetiva publicação.
+- Acompanhar pareamento, envio/recebimento reais e estabilidade prolongada em ARM64 no ambiente do operador. Os gates nativos e pulls publicados estão aprovados, com os limites registrados acima; eles não substituem essa homologação operacional.
 - Conferir o inventário a cada release, junto com as alterações de código, documentação e workflow, mantendo o registro de origem e os testes correspondentes.
 - Preservar a relação do fork com o repositório original e sua atribuição. O URL oficial identifica o upstream; a navegação relativa deste documento corresponde ao código desta distribuição.
 - Preservar o manifesto canônico e os patches de origem; corrigir em release futura campos históricos imutáveis apenas por novo registro de estado, sem reescrever evidência do build publicado. Alguns manifestos históricos dizem `production_deployed=false` porque foram emitidos antes do deploy; observação posterior deve ser lida no registro posterior correspondente.
@@ -248,7 +267,7 @@ As correções Laravel/PHP do Evolve Agentes — leitura de `data.url`, download
 A lista cobre os arquivos de código, testes, build e documentação alterados ou acrescentados em relação à base original, incluindo esta preparação ARM64, os documentos da distribuição e as notas de procedência/sanitização de evidências e patches. Patches e evidências são materiais de rastreabilidade; sua extensão não equivale a código novo do produto. Arquivos ignorados de build e dados locais não integram esta lista.
 
 <details>
-<summary>Inventário completo: 208 arquivos</summary>
+<summary>Inventário completo: 209 arquivos</summary>
 
 ```text
 .dockerignore
@@ -282,6 +301,7 @@ nandocosta/auth-schema-probe.go
 nandocosta/check-public-repository.py
 nandocosta/compose.override.yaml
 nandocosta/evidence/README.md
+nandocosta/evidence/arm64/artifact.json
 nandocosta/evidence/artifact.json
 nandocosta/evidence/auth-schema-compatibility.log
 nandocosta/evidence/live-qr.log

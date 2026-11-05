@@ -2,7 +2,9 @@
 
 Este fork reúne correções da comunidade e adaptações próprias sobre a [Evolution GO original](https://github.com/evolution-foundation/evolution-go), preservando atribuição, avisos legais e ativação. Não é uma versão oficial da Evolution Foundation.
 
-A imagem publicada é **`nandocosta/evolution-go:0.7.2-nc.6`**, também disponível em **`latest`**, para **Linux AMD64**. ARM64 está em homologação: os testes funcionais locais passaram por emulação, mas a aprovação do detector de corridas em ARM nativo e a publicação dessa variante continuam pendentes.
+**`nandocosta/evolution-go:latest` está disponível para Linux AMD64 e ARM64.** O Docker seleciona a variante compatível com o host. A tag fixa `0.7.2-nc.6` permanece AMD64; `0.7.2-nc.6-arm64` identifica a variante ARM64 e `0.7.2-nc.6-multiarch` conserva o índice aprovado das duas arquiteturas.
+
+A variante ARM64 passou nos testes Go, vet, race e 43 testes de runtime em runner ARM64 nativo. A publicação reutilizou o manifest AMD64 já validado. Consulte a [execução nativa](https://github.com/oinandocosta/evolution-go/actions/runs/41948461407) e o [registro do artefato](nandocosta/evidence/arm64/artifact.json) para identidades e limites.
 
 - [Imagem e tags no Docker Hub](https://hub.docker.com/r/nandocosta/evolution-go/tags).
 - [Notas da distribuição e atualização da imagem](nandocosta/README.md).

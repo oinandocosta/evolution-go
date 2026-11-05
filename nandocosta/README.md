@@ -22,9 +22,20 @@ O build exige testes Go, vet e race em 12 pacotes. Os contratos 403/404/500, ret
 
 Histórico: [nc.5](RELEASE-nc5.md), [nc.4](RELEASE-nc4.md), [nc.3](RELEASE-nc3.md). A nc.5 já validou a migração 14→16 com 3 sessões sintéticas, 19 tabelas e retorno ao código nc.4. Configurações e credenciais das instâncias não são alteradas por este patch.
 
+A homologação multiarch passou no Dockerfile canônico com testes Go, vet e race em runners nativos AMD64 e ARM64. Na imagem ARM64 final, passaram 43 testes de runtime sem SKIP, incluindo miniatura PDF. QR live, PostgreSQL opt-in e migração sintética entre arquiteturas foram verificados separadamente no histórico local por emulação; não foram repetidos nessa CI. Esses testes não comprovam pareamento, entrega real ou estabilidade prolongada em ARM64.
+
 ## Atualização
 
-Publicar cada release em uma nova tag fixa, preservando as versões anteriores. Após os checks e a validação do artefato, promover `latest` para o mesmo digest da versão publicada. A promoção atual foi aprovada: `nandocosta/evolution-go:latest` aponta para a mesma imagem da `0.7.2-nc.6`, com pull anônimo confirmado e sem reconstrução.
+Publicar cada release em uma nova tag fixa, preservando as versões anteriores. A promoção AMD64 anterior fez `latest` apontar para a imagem fixa nc.6. Após a homologação nativa ARM64, `latest` passou a apontar para um índice com exatamente duas variantes: o manifest AMD64 já publicado, preservado, e a imagem ARM64 aprovada no GitHub Actions. A tag fixa `0.7.2-nc.6` continua AMD64 e não foi sobrescrita.
+
+| Tag | Plataformas e finalidade |
+| --- | --- |
+| `nandocosta/evolution-go:latest` | Linux AMD64 e ARM64; índice promovido após validação. |
+| `nandocosta/evolution-go:0.7.2-nc.6-multiarch` | O mesmo índice aprovado das duas arquiteturas. |
+| `nandocosta/evolution-go:0.7.2-nc.6` | Tag fixa AMD64 existente, preservada. |
+| `nandocosta/evolution-go:0.7.2-nc.6-arm64` | Variante ARM64 nativa aprovada. |
+
+A [execução nativa](https://github.com/oinandocosta/evolution-go/actions/runs/41948461407) foi build-only. A publicação posterior usou o tar ARM já aprovado, sem recompilar, e preservou o manifest AMD64 anterior. Pulls anônimos e smoke tests das duas variantes passaram. As identidades estão no [registro multiarch](evidence/arm64/artifact.json). Essa publicação não fez redeploy nem alterou configurações ou sessões em produção.
 
 Atualizar `latest` no registro não modifica um contêiner já em execução: é necessário fazer pull e redeploy para aplicar uma nova versão. A stack atual usa `image: nandocosta/evolution-go:latest`, sem digest na referência. Preservar ambiente, volumes, banco, rede e licença ao atualizar, e conferir as sessões e o tráfego após a troca.
 

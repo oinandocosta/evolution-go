@@ -1,10 +1,33 @@
-# Preparação para Linux ARM64
+# Linux ARM64 e imagens multiarch
 
-O fluxo de build prepara `linux/amd64` e `linux/arm64` em runners nativos separados. O suporte ARM64 permanece **pendente da aprovação do detector de corridas em ambiente nativo**. Esta preparação não altera VERSION, RELEASE.json, dependências, configurações ou sessões existentes.
+A imagem `nandocosta/evolution-go:latest` está publicada para `linux/amd64` e `linux/arm64`, após aprovação dos gates canônicos em runners nativos separados. A tag fixa nc.6 AMD64 foi preservada e o índice inclui a variante ARM64 aprovada. A adição de arquitetura não altera VERSION, RELEASE.json, dependências, configurações ou sessões existentes.
 
-Uma tag como `latest` pode apontar para um índice com as duas variantes. O Docker seleciona a variante compatível com o host. ARM64 exige sistema operacional de 64 bits; ARM de 32 bits (`linux/arm/v7`) está fora desta preparação.
+`latest` e `0.7.2-nc.6-multiarch` apontam para o mesmo índice com as duas variantes. O Docker seleciona a variante compatível com o host. ARM64 exige sistema operacional de 64 bits; ARM de 32 bits (`linux/arm/v7`) permanece fora do escopo.
 
-## Resultado local de 4 de novembro de 2026
+## Homologação nativa e publicação
+
+A [execução 41948461407](https://github.com/oinandocosta/evolution-go/actions/runs/41948461407) concluiu com sucesso no commit [`5481e977006ab0b3c11ce2c976f78941f2ffa0fb`](https://github.com/oinandocosta/evolution-go/commit/5481e977006ab0b3c11ce2c976f78941f2ffa0fb). Os jobs AMD64 e ARM64 passaram no Dockerfile canônico, incluindo testes Go, vet e race. Na imagem ARM final, passaram 43 testes de runtime, sem falhas ou SKIP, incluindo WebP, JPEG, orientação EXIF e miniatura PDF.
+
+A CI rodou em modo build-only. O tar ARM validado foi publicado posteriormente, sem recompilar, com Image ID `sha256:f901a1689ff5b1c4b56f754c1692ba376c1bb7e42bdebe21c187ac7e3e23f4cf`. O novo build AMD64 da CI foi usado para validação; o índice publicado reutiliza o manifest AMD64 já existente.
+
+| Tag | Plataformas e finalidade |
+| --- | --- |
+| `nandocosta/evolution-go:latest` | Linux AMD64 e ARM64; índice promovido após validação. |
+| `nandocosta/evolution-go:0.7.2-nc.6-multiarch` | O mesmo índice aprovado das duas arquiteturas. |
+| `nandocosta/evolution-go:0.7.2-nc.6` | Tag fixa AMD64 existente, preservada. |
+| `nandocosta/evolution-go:0.7.2-nc.6-arm64` | Variante ARM64 nativa aprovada. |
+
+| Identidade | Digest |
+| --- | --- |
+| Tag fixa nc.6 e filho AMD64 preservado | `sha256:17689c858288a334407f3003e5b46a2f106fb854ce76ad0873d343dce2b7e3ea` |
+| Tag nc.6-arm64 e filho ARM64 | `sha256:b95241edd9c86a6add88bc448f6460bc53afe96df79454c1c6f04bb58e3df668` |
+| Índice nc.6-multiarch e latest | `sha256:e75b89deb9c43157602c93e42d75d26d4aa01d0ef3db20ea9265f760bb663121` |
+
+Pulls anônimos de `latest` em ambas as plataformas retornaram os Image IDs esperados e passaram no smoke de runtime. A imagem ARM usa o loader `/lib/ld-musl-aarch64.so.1`. O [registro do artefato](evidence/arm64/artifact.json) contém fonte Git, hashes, jobs e verificações. Não houve redeploy em produção; configurações, bancos, volumes e conexões existentes foram preservados.
+
+QR live, PostgreSQL opt-in e migração entre arquiteturas não rodaram nessa CI nativa. O histórico local abaixo registra esses testes separadamente, com dados sintéticos e sem pareamento. A execução nativa em VM hospedada também não representa homologação de todo equipamento ARM de destino ou teste prolongado de entrega real.
+
+## Histórico local de 4 de novembro de 2026 — QEMU
 
 A execução ARM64 emulada passou na suíte Go e no vet. Uma candidata funcional, construída com um Dockerfile temporário e ignorado apenas para concluir a investigação, passou em 43 testes do pacote de envio dentro das bibliotecas da imagem final, sem SKIP, incluindo WebP, JPEG, orientação EXIF e PDF. Também passaram o teste de PostgreSQL com 64 inicializações concorrentes e o handshake real que gerou seis QR Codes, sem pareamento.
 
@@ -12,7 +35,7 @@ Três sessões sintéticas criadas em AMD64 com o schema 14 da dependência anti
 
 O build canônico foi interrompido pelo detector de corridas antes de executar os testes instrumentados: `ThreadSanitizer: unsupported VMA range; Found 47 - Supported 48`. É uma limitação do runtime de detecção Go/LLVM nesse ambiente QEMU com endereçamento de 47 bits. A correção upstream específica é o [LLVM PR 220040](https://github.com/llvm/llvm-project/pull/220040); os runtimes oficiais Go 1.26.10 e 1.27.3 consultados ainda usam o detector anterior.
 
-O Dockerfile principal mantém o gate race obrigatório. A candidata funcional não foi aprovada para publicação; o próximo gate é executar o Dockerfile canônico em ARM64 nativo. Não houve publicação ARM64 nem promoção de `latest` nesta homologação local.
+O Dockerfile principal manteve o gate race obrigatório. Aquela candidata funcional sem race ficou somente local e não foi publicada. Na etapa posterior, o build canônico passou em ARM64 nativo; a imagem publicada veio dessa execução nativa, conforme o registro acima.
 
 ## Compilar e testar sem publicar
 
@@ -49,13 +72,13 @@ Validar também inicialização, persistência e retomada usando bancos descart�
 
 ## Publicar preservando o artefato amd64
 
-O workflow manual preparado usa `ubuntu-24.04` para AMD64 e `ubuntu-24.04-arm` para ARM64, sem QEMU. Cada job exige a arquitetura nativa e o driver Docker local, executa o Dockerfile canônico com testes Go, vet e race e depois todos os testes do pacote de envio na imagem final, com pelo menos 43 testes e nenhum SKIP. A execução real desse workflow no GitHub ainda está pendente. QR live, PostgreSQL opt-in e migração entre arquiteturas não são repetidos por esse workflow; seus metadados declaram essa cobertura separadamente.
+O workflow manual preparado usa `ubuntu-24.04` para AMD64 e `ubuntu-24.04-arm` para ARM64, sem QEMU. Cada job exige a arquitetura nativa e o driver Docker local, executa o Dockerfile canônico com testes Go, vet e race e depois todos os testes do pacote de envio na imagem final, com pelo menos 43 testes e nenhum SKIP. A execução real desse workflow no GitHub foi aprovada no [run 41948461407](https://github.com/oinandocosta/evolution-go/actions/runs/41948461407), em modo build-only. QR live, PostgreSQL opt-in e migração entre arquiteturas não são repetidos por esse workflow; seus metadados declaram essa cobertura separadamente.
 
 Por padrão, `publish` é falso: cada arquitetura exporta apenas a imagem final em um arquivo tar, acompanhado de SHA256SUMS, metadados, logs e inspect das imagens final e verification como artifact. A imagem verification permanece somente no runner para os testes. Esse modo não exige credenciais do Docker Hub e permite baixar, conferir os checksums e carregar a imagem com `docker load` antes de publicar localmente com as credenciais já existentes.
 
 Quando `publish` está marcado, o guard exige que o repositório Docker Hub já seja público e que a tag canônica e os dois sufixos de arquitetura ainda não existam. Apenas depois de ambos os jobs nativos passarem, um job separado confere e carrega os artifacts, publica os sufixos e monta a nova tag de versão com exatamente dois manifests por digest. Uma falha de push pode deixar um sufixo disponível; ela não autoriza a criação do índice sem as duas variantes. O workflow não promove `latest`. Para futuras releases, atualizar VERSION e RELEASE.json conforme o processo existente e usar uma nova tag fixa; não recompilar e sobrescrever uma release já publicada apenas para adicionar arquitetura.
 
-Para acrescentar ARM64 à `latest` atual sem reconstruir o amd64 validado:
+Procedimento usado para acrescentar ARM64 à `latest` sem reconstruir o amd64 validado:
 
 1. Registrar o digest amd64 atualmente aprovado e o conteúdo de `latest` antes da promoção.
 2. Concluir e registrar os testes ARM64. Publicar essa mesma imagem em uma tag própria de versão e arquitetura, sem substituir as tags amd64 existentes.

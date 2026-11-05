@@ -1,0 +1,134 @@
+{
+  "status": "published_multiarch_verified",
+  "version": "0.7.2-nc.6",
+  "publication": {
+    "status": "published_and_verified",
+    "arm64_tag": "nandocosta/evolution-go:0.7.2-nc.6-arm64",
+    "arm64_manifest_digest": "sha256:b95241edd9c86a6add88bc448f6460bc53afe96df79454c1c6f04bb58e3df668",
+    "candidate_tag": "nandocosta/evolution-go:0.7.2-nc.6-multiarch",
+    "candidate_index_digest": "sha256:e75b89deb9c43157602c93e42d75d26d4aa01d0ef3db20ea9265f760bb663121",
+    "latest_tag": "nandocosta/evolution-go:latest",
+    "latest_index_digest": "sha256:e75b89deb9c43157602c93e42d75d26d4aa01d0ef3db20ea9265f760bb663121",
+    "index_platforms": [
+      "linux/amd64",
+      "linux/arm64"
+    ],
+    "unique_platform_count": 2,
+    "anonymous_pull_verified": {
+      "linux/amd64": true,
+      "linux/arm64": true
+    },
+    "production_redeployed": false,
+    "anonymous_pull_image_ids": {
+      "linux/amd64": "sha256:bd5cfada446f582e62e79bc49cbc1b21f40b7b3d8b55d63679128b5ea426213e",
+      "linux/arm64": "sha256:f901a1689ff5b1c4b56f754c1692ba376c1bb7e42bdebe21c187ac7e3e23f4cf"
+    },
+    "mode": "manual_promotion_after_successful_build_only_ci_without_rebuild",
+    "post_pull_smoke": {
+      "linux/amd64": true,
+      "linux/arm64": true,
+      "arm64_loader": "/lib/ld-musl-aarch64.so.1",
+      "execution_environment": "Local amd64 Docker Desktop; ARM64 smoke used QEMU",
+      "reference": "nandocosta/evolution-go:latest"
+    },
+    "validation_counts": {
+      "anonymous_pulls_passed": 5,
+      "smokes_executed": 4,
+      "smokes_passed": 4,
+      "smokes_failed": 0
+    },
+    "validation_scope_note": "The candidate AMD64 pull did not execute a smoke; both final latest platform pulls executed and passed smoke checks."
+  },
+  "preserved_amd64": {
+    "tag": "nandocosta/evolution-go:0.7.2-nc.6",
+    "manifest_digest": "sha256:17689c858288a334407f3003e5b46a2f106fb854ce76ad0873d343dce2b7e3ea",
+    "existing_manifest_reused": true,
+    "tag_overwritten": false,
+    "new_ci_amd64_build_used_in_index": false
+  },
+  "native_validation": {
+    "run_id": 41948461407,
+    "run_attempt": 1,
+    "run_url": "https://github.com/oinandocosta/evolution-go/actions/runs/41948461407",
+    "source_commit": "5481e977006ab0b3c11ce2c976f78941f2ffa0fb",
+    "run_conclusion": "success",
+    "ci_publication_skipped": true,
+    "preflight_job_id": 126986418052,
+    "arm64_job_id": 126986493966,
+    "amd64_job_id": 126986493974,
+    "go_test_vet_race": {
+      "linux/arm64": true,
+      "linux/amd64": true
+    },
+    "arm64_runtime": {
+      "top_level_passed": 43,
+      "failed": 0,
+      "skipped": 0,
+      "pdf_thumbnail_passed": true
+    },
+    "amd64_runtime_step_passed": true,
+    "live_qr_executed": false,
+    "postgres_opt_in_executed": false,
+    "crossarch_auth_migration_executed": false,
+    "git_tree": "1b2062f0e8016f10d74e2ff0cf6f3cbe4e0dadd5"
+  },
+  "approved_arm64_artifact": {
+    "github_artifact_id": 13379872218,
+    "github_reported_zip_digest": "sha256:9f1d97d2da742292850049475de363c83addb909b381cbff8a82ddb6df676003",
+    "zip_digest_checked_locally": true,
+    "runtime_archive_sha256": "c7a0d6e95b3cbab3bd11ef32cbcd6dab0029400aa38f54ca3cb7ed4e9869df48",
+    "runtime_image_id": "sha256:f901a1689ff5b1c4b56f754c1692ba376c1bb7e42bdebe21c187ac7e3e23f4cf",
+    "source_inputs_checked": [
+      "Dockerfile",
+      "nandocosta/Dockerfile.runtime-tests",
+      "go.mod",
+      "go.sum",
+      "VERSION",
+      "nandocosta/RELEASE.json"
+    ],
+    "verified_files": 14,
+    "source_inputs_verification_basis": "Git blobs of source.commit, not Windows working-tree bytes"
+  },
+  "separate_local_qemu_history": {
+    "canonical_race_passed": false,
+    "race_initialization_error": "Found 47 - Supported 48",
+    "functional_candidate_published": false,
+    "functional_runtime_tests": 43,
+    "live_qr_generated_without_pairing": 6,
+    "postgres_pool_concurrent_starts": 64,
+    "synthetic_migration": {
+      "from_platform": "linux/amd64",
+      "to_platform": "linux/arm64",
+      "schema_before": 14,
+      "schema_after": 16,
+      "synthetic_instances": 3,
+      "production_data": false,
+      "legacy_snapshot_sha256": "de25362721022af8210c58fdfe68890e4a2cea42d4667e81818d0b2003fb8a79",
+      "new_fields_sha256": "2ae724aff0fbd8d4194c964de0f32132295021b756859bf1df8518fde076c7ab"
+    },
+    "evidence_location": "Local ignored records; summarized here without asserting that the original logs are public"
+  },
+  "limits": {
+    "real_paired_account_tested": false,
+    "real_message_delivery_verified_by_this_run": false,
+    "long_running_arm64_soak_tested": false,
+    "arm32_supported": false,
+    "activation_preserved": true,
+    "environment_volumes_databases_and_connections_changed_by_publication": false
+  },
+  "recorded_at_utc": "2026-11-05T01:46:21.087348+00:00",
+  "source": {
+    "repository": "https://github.com/oinandocosta/evolution-go",
+    "commit": "5481e977006ab0b3c11ce2c976f78941f2ffa0fb",
+    "git_tree": "1b2062f0e8016f10d74e2ff0cf6f3cbe4e0dadd5",
+    "source_input_sha256_from_git_blobs": {
+      "Dockerfile": "6eb528c640532e999e776596a48599801ac6317bc7b93ed49a270e5b731fd690",
+      "nandocosta/Dockerfile.runtime-tests": "dbb5cee3a2cc48919fb10bf8b07abf84a768d558d6149c5d92b7ef16cb40a204",
+      "go.mod": "3ad2c297f4da80200a8fe151a8f27dcdf20bd98b92dc751bd08d27888629ba87",
+      "go.sum": "3283ef18610cb4fd2f7905c26477ee47c244f92d93650053805d0bd46561d8d7",
+      "VERSION": "60bd8d6b4705c5275c6e224901d328513c0c8a5edf3ab2f146b43f7865d3ed15",
+      "nandocosta/RELEASE.json": "b05d93250491b6efb436a6e680ed8f3a0262fe31ed6e08f8305ff5b572b8a8cb"
+    },
+    "source_input_hashes_match_ci_artifact": true
+  }
+}
